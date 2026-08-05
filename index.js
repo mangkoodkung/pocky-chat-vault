@@ -34,8 +34,12 @@ import {
     normalizeGoogleDriveFolderName,
     organizeGoogleDriveBackups,
     prepareGoogleDrive,
+    consumeGoogleDriveRedirectAuthorization,
+    getGoogleDriveRedirectUri,
     restoreGoogleDriveConnection,
     setGoogleDriveFolderName,
+    shouldUseGoogleDriveRedirect,
+    startGoogleDriveRedirectAuthorization,
     uploadBackupToGoogleDrive,
 } from "./google-drive.js";
 import {
@@ -79,7 +83,7 @@ import {
 // because every user's saved settings live under this key. Renaming it would
 // orphan their settings and silently reset the extension to defaults.
 const extensionName = "sillytavern-chat-vault";
-const extensionVersion = "1.0";
+const extensionVersion = "1.1";
 
 // The name the user sees — menu headings, toast titles, the settings panel.
 // Deliberately separate from extensionName above: that one is a storage key and
@@ -396,6 +400,15 @@ async function loadSettings() {
     if (originOutput) {
         originOutput.textContent = window.location.origin;
     }
+
+    // Only the iOS redirect flow needs this one, but it is shown to everyone:
+    // whoever sets up the Client ID is rarely the one who later tries it on a
+    // phone, and going back to Google Cloud afterwards is the annoying part.
+    const redirectOutput = document.getElementById("chat_vault_google_redirect_uri");
+
+    if (redirectOutput) {
+        redirectOutput.textContent = getGoogleDriveRedirectUri();
+    }
 }
 
 function clearGoogleDriveUiSession() {
@@ -511,6 +524,59 @@ async function restoreRememberedGoogleDriveSessionOnce() {
     } finally {
         refreshCatStorageControls();
     }
+}
+
+// Second half of the mobile redirect. Google has sent the browser back with the
+// token in the fragment; google-drive.js has already validated it. What is left
+// is the bookkeeping the popup path does inline: remember the account, settle the
+// folder, and send anything that queued up while we were away.
+async function finishGoogleDriveRedirectConnection() {
+    const settings = extension_settings[extensionName];
+    const result = await consumeGoogleDriveRedirectAuthorization();
+
+    if (result.status === "none") {
+        return false;
+    }
+
+    if (result.status === "error") {
+        clearGoogleDriveSession();
+        clearGoogleDriveUiSession();
+        showGoogleDriveError(
+            new GoogleDriveError(result.code, "Google redirect authorization failed"),
+            "เชื่อม Google Drive ไม่สำเร็จ",
+        );
+        refreshCatStorageControls();
+
+        return true;
+    }
+
+    try {
+        setGoogleDriveFolderName(
+            normalizeGoogleDriveFolderName(settings.googleDriveFolderName),
+        );
+
+        const { account, folder, movedCount } = await loadGoogleDriveSessionDetails();
+
+        googleDriveReconnectRetryAfter = 0;
+        googleDriveStatusMessage = movedCount > 0
+            ? `พร้อมใช้งาน · ย้ายไฟล์เดิม ${movedCount} ไฟล์เข้า “${folder.name}” แล้ว`
+            : `พร้อมใช้งาน · โฟลเดอร์ “${folder.name}”`;
+        toastr.success(
+            `เชื่อม ${account.emailAddress || account.displayName || "บัญชี Google"} สำเร็จแล้ว`,
+            extensionDisplayName,
+        );
+        await flushPendingDriveBackups();
+        console.log(`[${extensionName}] Google Drive connected through redirect`);
+    } catch (error) {
+        clearGoogleDriveSession();
+        clearGoogleDriveUiSession();
+        showGoogleDriveError(error, "เชื่อม Google Drive ไม่สำเร็จ");
+        console.error(`[${extensionName}] Redirect connection follow-up failed:`, error);
+    }
+
+    refreshCatStorageControls();
+
+    return true;
 }
 
 async function restoreRememberedGoogleDriveSession() {
@@ -1940,6 +2006,23 @@ function createCatMagnet() {
             const folderName = normalizeGoogleDriveFolderName(driveFolderInput.value);
 
             setGoogleDriveFolderName(folderName);
+
+            // On iOS the popup can never hand the token back, so the whole page
+            // goes to Google instead. Persist first: this call navigates away and
+            // nothing after it runs, so anything not saved here is lost.
+            if (shouldUseGoogleDriveRedirect()) {
+                settings.googleDriveFolderName = folderName;
+                saveSettingsDebounced();
+                googleDriveStatusMessage = "กำลังพาไปหน้า Google...";
+                updateStorageControls();
+                startGoogleDriveRedirectAuthorization(clientId, {
+                    loginHint: settings.googleDriveAccountHint,
+                    selectAccount,
+                });
+
+                return;
+            }
+
             await connectGoogleDrive(clientId, {
                 loginHint: settings.googleDriveAccountHint,
                 selectAccount,
@@ -3780,6 +3863,13 @@ function showGoogleDriveError(error, fallbackMessage) {
         authorization_required: "สิทธิ์ Google Drive หมดอายุ กรุณากดเชื่อมใหม่",
         access_denied: "ไม่ได้รับอนุญาตให้เข้าถึง Google Drive",
         access_token_missing: "Google ไม่ได้ส่งสิทธิ์กลับมา กรุณาเชื่อมใหม่",
+        // Redirect flow (mobile). These are refusals on our side, not Google's:
+        // the reply did not prove it came from the request we sent.
+        redirect_state_mismatch: "การเชื่อมต่อไม่ตรงกับที่เริ่มไว้ ระบบจึงไม่รับสิทธิ์นี้ · กรุณากดเชื่อมใหม่จากในแอป",
+        redirect_state_invalid: "ข้อมูลการเชื่อมต่อเสียหาย กรุณากดเชื่อมใหม่",
+        redirect_token_foreign: "สิทธิ์ที่ได้กลับมาไม่ใช่ของแอปนี้ ระบบจึงปฏิเสธเพื่อความปลอดภัย",
+        redirect_token_scope: "สิทธิ์ที่ได้กลับมาไม่ครอบคลุม Google Drive กรุณาเชื่อมใหม่",
+        redirect_token_unverified: "ตรวจสอบสิทธิ์กับ Google ไม่สำเร็จ กรุณาลองใหม่",
         network_error: "ติดต่อ Google Drive ไม่ได้ กรุณาตรวจอินเทอร์เน็ต",
         drive_request_failed: "Google Drive ปฏิเสธคำขอ กรุณาตรวจว่าเปิด Drive API แล้ว",
         drive_temporarily_unavailable: "Google Drive ยังไม่พร้อมหรือมีคำขอมากเกินไป ระบบจะลองส่งซ้ำอัตโนมัติ",
@@ -4247,6 +4337,15 @@ jQuery(async () => {
 
         prepareGoogleDrive()
             .then(async () => {
+                // Coming back from the mobile redirect the token is already in the
+                // URL, so settle that before anything tries to reconnect — a silent
+                // reconnect would otherwise race it and fail for no reason.
+                const redirected = await finishGoogleDriveRedirectConnection();
+
+                if (redirected) {
+                    return;
+                }
+
                 const restored = await restoreRememberedGoogleDriveSession();
 
                 if (restored) {

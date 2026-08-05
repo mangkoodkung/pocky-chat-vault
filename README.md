@@ -64,22 +64,27 @@
 
 ### 3.4 สร้าง OAuth Client ID
 
-9. เมนูซ้าย → **APIs & Services → Credentials**
-10. กด **Create Credentials → OAuth client ID**
+9. เมนูซ้าย → **APIs & Services → Credentials** (หน้าใหม่ของ Google เปลี่ยนชื่อเป็น **Google Auth Platform → Clients** แล้ว ถ้าเห็นชื่อนี้คือถูกหน้าเดียวกัน)
+10. กด **Create Credentials → OAuth client ID** (หน้าใหม่คือปุ่ม **Create client**)
 11. **Application type** เลือก **Web application** → ตั้งชื่อ
 12. หัวข้อ **Authorized JavaScript origins** → กด **Add URI** → ใส่ origin ของหน้า SillyTavern ของคุณ **ให้ตรงเป๊ะทุกตัวอักษร** เช่น
     - `https://st.example.com` (ถ้าเปิดผ่านโดเมน)
     - `http://localhost:8000` (ถ้าเปิดในเครื่อง)
 
     > ⚠️ **จุดพลาดที่เจอบ่อย:** ห้ามใส่ `/` หรือ path ต่อท้าย · `localhost` กับ `127.0.0.1` ถือเป็นคนละ origin · พอร์ตต้องตรง · `http` กับ `https` ต่างกัน
-13. กด **Create** → จะได้ **Client ID** ที่ลงท้ายด้วย `.apps.googleusercontent.com` → ก๊อปไว้
+13. **ถ้าจะใช้บน iPhone/iPad** → หัวข้อ **Authorized redirect URIs** → กด **Add URI** → ใส่ **URL ของหน้า SillyTavern แบบเต็ม** เช่น
+    - `https://st.example.com/`
+    - `http://localhost:8000/`
+
+    > บน iOS หน้าต่างป๊อปอัปส่งสิทธิ์กลับมาไม่ได้ (ข้อจำกัดของ iOS เอง) พ็อกกี้จึงเปลี่ยนไปใช้วิธีพาไปหน้า Google แล้วเด้งกลับแทน ซึ่งต้องลงทะเบียนที่อยู่ขากลับไว้ก่อน · **ถ้าใช้แค่บนคอมข้ามข้อนี้ได้** · ค่าที่ต้องใส่ดูได้จาก **Extensions settings → Pocky chat vault** จะแสดงไว้ให้ตรงเป๊ะ
+14. กด **Create** → จะได้ **Client ID** ที่ลงท้ายด้วย `.apps.googleusercontent.com` → ก๊อปไว้
 
 ### 3.5 ใส่ Client ID ใน SillyTavern
 
-14. เปิด SillyTavern → **Extensions settings → Pocky chat vault** → วาง Client ID ที่ก๊อปมา
-15. กดแมว → แท็บ **ตั้งค่า** → เปลี่ยนที่เก็บเป็น **Google Drive**
-16. กดปุ่ม **ต่อบัญชี Google ให้พ็อกกี้** → เลือกบัญชี → อนุญาตสิทธิ์
-17. การ์ดบัญชีขึ้นชื่ออีเมล = เชื่อมสำเร็จ 🎉 จากนี้พ็อกกี้จะส่งสำเนาขึ้น Drive ให้อัตโนมัติ
+15. เปิด SillyTavern → **Extensions settings → Pocky chat vault** → วาง Client ID ที่ก๊อปมา
+16. กดแมว → แท็บ **ตั้งค่า** → เปลี่ยนที่เก็บเป็น **Google Drive**
+17. กดปุ่ม **ต่อบัญชี Google ให้พ็อกกี้** → เลือกบัญชี → อนุญาตสิทธิ์
+18. การ์ดบัญชีขึ้นชื่ออีเมล = เชื่อมสำเร็จ 🎉 จากนี้พ็อกกี้จะส่งสำเนาขึ้น Drive ให้อัตโนมัติ
 
 > Client ID เป็นข้อมูล**สาธารณะ** ใส่ใน settings ได้ปลอดภัย · แต่ **Client secret ไม่ต้องใช้และห้ามใส่** ที่ไหนทั้งสิ้น
 
@@ -90,6 +95,8 @@
 | กดเชื่อมแล้วหน้าต่าง Google ไม่เด้ง | ปลดบล็อกป๊อปอัปของเบราว์เซอร์สำหรับหน้านี้ |
 | ขึ้น error `redirect_uri_mismatch` / origin | origin ใน Google Cloud ไม่ตรงกับหน้าจริง เช็ก `http`/`https`, `localhost` vs `127.0.0.1`, พอร์ต, และห้ามมี `/` ท้าย |
 | `Access blocked · app not verified` | เพิ่มอีเมลตัวเองใน **Test users** หรือกด **Publish app** ในหน้า consent screen |
+| บน iPhone/iPad กดเชื่อมแล้วเด้งกลับมาแต่ไม่ติด | ยังไม่ได้ใส่ **Authorized redirect URI** (ข้อ 13) · ต้องตรงกับค่าที่แสดงใน Extensions settings ทุกตัวอักษร รวม `/` ปิดท้าย |
+| ขึ้นว่า "สิทธิ์ที่ได้กลับมาไม่ใช่ของแอปนี้" | ระบบปฏิเสธสิทธิ์ที่ไม่ได้ออกให้ Client ID ของคุณ เพื่อความปลอดภัย · กดเชื่อมใหม่จากในแอปเท่านั้น อย่ากดลิงก์เชื่อมที่คนอื่นส่งมา |
 | เชื่อมได้แต่ไม่เห็นไฟล์บน Drive | เปิดโฟลเดอร์ `Chat Vault` บน Drive · สิทธิ์ `drive.file` ทำให้แอปเห็นเฉพาะไฟล์ที่มันสร้าง ไม่ใช่ Drive ทั้งบัญชี |
 
 **สรุประดับความยาก:** เก็บในเครื่อง = ง่ายมาก (2 นาที) · เชื่อม Google Drive = ตั้งครั้งแรกใช้เวลา ~10 นาที ยากตรง Google Cloud แต่ทำครั้งเดียวจบ

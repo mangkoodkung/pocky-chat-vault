@@ -204,6 +204,197 @@ export function restoreGoogleDriveConnection(clientId, loginHint = "") {
     });
 }
 
+/* ---------------------------------------------------------------------------
+ * Redirect authorization (mobile)
+ *
+ * The popup flow above cannot complete on iOS: WebKit drops window.opener from
+ * the authorization window, so Google has nowhere to hand the token back and the
+ * window just closes. Every browser on iOS is WebKit, so there is no "use a
+ * different browser" answer, and Google's token client is popup-only — it has no
+ * redirect mode. The way out is to leave the page entirely, let Google return
+ * the token in the URL fragment, and pick it up on the way back.
+ *
+ * That is the OAuth implicit flow, which Google keeps working but no longer
+ * recommends, because a token in a URL is easier to steal or to swap for someone
+ * else's. Both risks are handled below and neither is optional:
+ *   - a random `state` is stored before leaving and must come back unchanged,
+ *     so a link someone else crafted cannot inject a token;
+ *   - the returned token is checked against Google to confirm it was issued to
+ *     THIS client id and carries only our scope, which is what stops a token
+ *     minted for another app from being accepted here;
+ *   - the fragment is wiped from the address bar and from history immediately.
+ * ------------------------------------------------------------------------- */
+
+const GOOGLE_OAUTH_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_INFO_ENDPOINT = "https://oauth2.googleapis.com/tokeninfo";
+const REDIRECT_STATE_STORAGE_KEY = "chatVaultGoogleRedirectState";
+
+// Where Google sends the browser back to. Deliberately the page itself with no
+// query string: this exact value has to be registered as an Authorized redirect
+// URI, and anything that varies per visit could never be registered.
+export function getGoogleDriveRedirectUri() {
+    const { origin, pathname } = globalThis.location;
+
+    return `${origin}${pathname}`;
+}
+
+// iOS, including iPadOS which reports itself as a Mac but has a touch screen.
+export function shouldUseGoogleDriveRedirect() {
+    const nav = globalThis.navigator;
+    const ua = String(nav?.userAgent || "");
+
+    if (/iPad|iPhone|iPod/.test(ua)) {
+        return true;
+    }
+
+    return ua.includes("Macintosh") && Number(nav?.maxTouchPoints || 0) > 1;
+}
+
+function createRedirectState() {
+    const bytes = new Uint8Array(16);
+
+    globalThis.crypto.getRandomValues(bytes);
+
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function startGoogleDriveRedirectAuthorization(clientId, {
+    loginHint = "",
+    selectAccount = false,
+} = {}) {
+    const normalizedClientId = normalizeClientId(clientId);
+    const state = createRedirectState();
+    const redirectUri = getGoogleDriveRedirectUri();
+
+    // sessionStorage, not localStorage: the value is meaningless after this tab
+    // finishes the round trip, and it must not leak into other tabs.
+    globalThis.sessionStorage.setItem(REDIRECT_STATE_STORAGE_KEY, JSON.stringify({
+        state,
+        clientId: normalizedClientId,
+        redirectUri,
+    }));
+
+    const params = new URLSearchParams({
+        client_id: normalizedClientId,
+        redirect_uri: redirectUri,
+        response_type: "token",
+        scope: GOOGLE_DRIVE_SCOPE,
+        state,
+        include_granted_scopes: "true",
+    });
+
+    if (selectAccount) {
+        params.set("prompt", "select_account");
+    } else if (loginHint) {
+        params.set("login_hint", String(loginHint).trim());
+    }
+
+    globalThis.location.assign(`${GOOGLE_OAUTH_AUTH_ENDPOINT}?${params.toString()}`);
+}
+
+// Remove the fragment without adding a history entry, so the token is not left
+// sitting in the address bar or reachable with the back button.
+function stripAuthorizationFragment() {
+    const { origin, pathname, search } = globalThis.location;
+
+    globalThis.history.replaceState(null, "", `${origin}${pathname}${search}`);
+}
+
+// A token arriving in a URL proves nothing on its own. Ask Google who it was
+// issued to and refuse anything that is not ours.
+async function assertTokenBelongsToClient(token, expectedClientId) {
+    const response = await fetch(
+        `${GOOGLE_TOKEN_INFO_ENDPOINT}?access_token=${encodeURIComponent(token)}`,
+    );
+
+    if (!response.ok) {
+        throw new GoogleDriveError(
+            "redirect_token_unverified",
+            "Google could not confirm the returned token",
+        );
+    }
+
+    const info = await response.json();
+
+    if (info.aud !== expectedClientId) {
+        throw new GoogleDriveError(
+            "redirect_token_foreign",
+            "The returned token was issued to a different application",
+        );
+    }
+
+    if (!String(info.scope || "").split(/\s+/).includes(GOOGLE_DRIVE_SCOPE)) {
+        throw new GoogleDriveError(
+            "redirect_token_scope",
+            "The returned token does not carry the Drive scope",
+        );
+    }
+
+    return Math.max(0, Number.parseInt(info.expires_in, 10) || 0);
+}
+
+export async function consumeGoogleDriveRedirectAuthorization() {
+    const stored = globalThis.sessionStorage.getItem(REDIRECT_STATE_STORAGE_KEY);
+    const rawHash = String(globalThis.location.hash || "").replace(/^#/, "");
+
+    if (!rawHash || !stored) {
+        return { status: "none" };
+    }
+
+    const fragment = new URLSearchParams(rawHash);
+    const returnedState = fragment.get("state");
+
+    // Not our round trip — leave the fragment alone, SillyTavern may use it.
+    if (!returnedState) {
+        return { status: "none" };
+    }
+
+    globalThis.sessionStorage.removeItem(REDIRECT_STATE_STORAGE_KEY);
+    stripAuthorizationFragment();
+
+    let expected;
+
+    try {
+        expected = JSON.parse(stored);
+    } catch (error) {
+        return { status: "error", code: "redirect_state_invalid" };
+    }
+
+    if (returnedState !== expected.state) {
+        return { status: "error", code: "redirect_state_mismatch" };
+    }
+
+    const returnedError = fragment.get("error");
+
+    if (returnedError) {
+        return { status: "error", code: returnedError };
+    }
+
+    const token = fragment.get("access_token");
+
+    if (!token) {
+        return { status: "error", code: "access_token_missing" };
+    }
+
+    try {
+        const verifiedExpiresIn = await assertTokenBelongsToClient(token, expected.clientId);
+        const expiresInSeconds = verifiedExpiresIn
+            || Math.max(0, Number.parseInt(fragment.get("expires_in"), 10) || 3600);
+
+        accessToken = token;
+        accessTokenExpiresAt = Date.now() + (expiresInSeconds * 1000);
+        cachedFolderIds.clear();
+        cachedBackupFileIds.clear();
+
+        return { status: "connected", expiresAt: accessTokenExpiresAt };
+    } catch (error) {
+        return {
+            status: "error",
+            code: error instanceof GoogleDriveError ? error.code : "redirect_token_unverified",
+        };
+    }
+}
+
 export function clearGoogleDriveSession() {
     accessToken = null;
     accessTokenExpiresAt = 0;
