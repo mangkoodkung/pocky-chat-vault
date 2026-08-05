@@ -1,0 +1,1183 @@
+/* The drawing fills the whole box, so nothing is cropped here. Keeping the box
+   free of overflow/paint containment lets the health aura spread past the edge
+   and trace the cat outline instead of a rectangle. */
+#chat_vault_cat_magnet {
+    position: fixed;
+    z-index: 10000;
+    width: 64px;
+    height: 42px;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+
+    /* Split into layers so dragging and health can each change their own part
+       without one overwriting the other. */
+    --chat-vault-cat-shadow: drop-shadow(0 4px 5px rgb(0 0 0 / 45%));
+    --chat-vault-cat-aura-core: drop-shadow(0 0 0 transparent);
+    --chat-vault-cat-aura-glow: drop-shadow(0 0 0 transparent);
+
+    filter:
+        var(--chat-vault-cat-shadow)
+        var(--chat-vault-cat-aura-core)
+        var(--chat-vault-cat-aura-glow);
+    transition: filter 280ms ease;
+    contain: layout;
+}
+
+#chat_vault_cat_magnet.chat-vault-cat-dragging {
+    cursor: grabbing;
+    --chat-vault-cat-shadow: drop-shadow(0 7px 8px rgb(0 0 0 / 55%));
+}
+
+/* Green, amber and red stay reserved for health. Purple remains the identity
+   accent and is never used to signal state. */
+#chat_vault_cat_magnet.chat-vault-health-healthy {
+    --chat-vault-cat-aura-core: drop-shadow(0 0 4px rgb(74 222 128 / 95%));
+    --chat-vault-cat-aura-glow: drop-shadow(0 0 10px rgb(74 222 128 / 65%));
+}
+
+#chat_vault_cat_magnet.chat-vault-health-pending {
+    --chat-vault-cat-aura-core: drop-shadow(0 0 4px rgb(250 204 21 / 95%));
+    --chat-vault-cat-aura-glow: drop-shadow(0 0 10px rgb(250 204 21 / 65%));
+}
+
+#chat_vault_cat_magnet.chat-vault-health-attention {
+    --chat-vault-cat-aura-core: drop-shadow(0 0 4px rgb(248 113 113 / 98%));
+    --chat-vault-cat-aura-glow: drop-shadow(0 0 11px rgb(248 113 113 / 70%));
+}
+
+#chat_vault_cat_magnet img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: none;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 180ms ease;
+}
+
+/* Untouched-for-a-while fade. Unrelated to the idle health state.
+   The aura goes with it: a glow left hanging around a barely visible cat reads
+   as a stray light rather than a status. Declared after the health rules so it
+   wins on equal specificity, and timed with the image so neither outlives the
+   other. */
+#chat_vault_cat_magnet.chat-vault-cat-idle {
+    --chat-vault-cat-aura-core: drop-shadow(0 0 0 transparent);
+    --chat-vault-cat-aura-glow: drop-shadow(0 0 0 transparent);
+    --chat-vault-cat-shadow: drop-shadow(0 2px 4px rgb(0 0 0 / 18%));
+    transition: filter 180ms ease;
+}
+
+#chat_vault_cat_magnet.chat-vault-cat-idle img {
+    opacity: 0.28;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #chat_vault_cat_magnet {
+        transition: none;
+    }
+
+    #chat_vault_cat_magnet img {
+        transition: none;
+    }
+}
+
+#chat_vault_cat_menu {
+    position: fixed;
+    z-index: 10001;
+    width: min(220px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 10px;
+    border: 1px solid rgb(136 6 206 / 45%);
+    border-radius: 12px;
+    background: #111;
+    color: #fff;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 55%);
+}
+
+#chat_vault_cat_menu[hidden] {
+    display: none !important;
+}
+
+.chat-vault-cat-menu-title {
+    margin-bottom: 8px;
+    font-weight: 700;
+    text-align: center;
+}
+
+.chat-vault-health-summary {
+    margin-bottom: 8px;
+    padding: 7px 8px;
+    border: 1px solid rgb(255 255 255 / 9%);
+    border-radius: 8px;
+    background: rgb(0 0 0 / 55%);
+    font-size: 0.78em;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.chat-vault-health-summary.chat-vault-health-healthy {
+    border-color: rgb(74 222 128 / 55%);
+    background: rgb(22 101 52 / 38%);
+}
+
+.chat-vault-health-summary.chat-vault-health-pending {
+    border-color: rgb(250 204 21 / 55%);
+    background: rgb(113 63 18 / 38%);
+}
+
+.chat-vault-health-summary.chat-vault-health-attention {
+    border-color: rgb(248 113 113 / 60%);
+    background: rgb(127 29 29 / 40%);
+}
+
+.chat-vault-cat-menu-button {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-quick-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.chat-vault-quick-actions .menu_button {
+    width: 100%;
+    min-height: 34px;
+    margin: 0;
+    padding: 5px 6px;
+    font-size: 0.78em;
+}
+
+.chat-vault-storage-section,
+.chat-vault-autosave-section,
+.chat-vault-security-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgb(255 255 255 / 9%);
+}
+
+.chat-vault-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.chat-vault-security-status {
+    padding: 7px 8px;
+    border: 1px solid rgb(250 204 21 / 38%);
+    border-radius: 8px;
+    background: rgb(113 63 18 / 28%);
+    font-size: 0.78em;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.chat-vault-security-status-success {
+    border-color: rgb(74 222 128 / 48%);
+    background: rgb(22 101 52 / 34%);
+}
+
+.chat-vault-security-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px;
+}
+
+.chat-vault-security-actions .menu_button {
+    width: 100%;
+    margin: 0;
+    padding: 5px 6px;
+    font-size: 0.75em;
+}
+
+.chat-vault-security-actions .menu_button[hidden] {
+    display: none !important;
+}
+
+.chat-vault-attachment-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 6px 7px;
+}
+
+.chat-vault-attachment-limit {
+    grid-column: 2;
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-storage-select,
+.chat-vault-autosave-select {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-drive-connect-button,
+.chat-vault-drive-switch-account-button,
+.chat-vault-drive-restore-button,
+.chat-vault-local-restore-button,
+.chat-vault-drive-folder-button,
+.chat-vault-drive-folder-open-link,
+.chat-vault-drive-last-file-open-link {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-drive-folder-open-link,
+.chat-vault-drive-last-file-open-link {
+    display: block;
+    box-sizing: border-box;
+    text-align: center;
+    text-decoration: none;
+}
+
+.chat-vault-drive-connect-button[hidden],
+.chat-vault-drive-switch-account-button[hidden],
+.chat-vault-drive-restore-button[hidden],
+.chat-vault-drive-status[hidden],
+.chat-vault-drive-folder-section[hidden],
+.chat-vault-drive-folder-open-link[hidden],
+.chat-vault-drive-last-file-open-link[hidden] {
+    display: none !important;
+}
+
+.chat-vault-local-restore-button + input[type="file"][hidden] {
+    display: none !important;
+}
+
+.chat-vault-rescue-button[hidden] {
+    display: none !important;
+}
+
+.chat-vault-drive-status {
+    padding: 9px 10px;
+    border: 1px solid rgb(255 255 255 / 9%);
+    border-radius: 9px;
+    background: rgb(0 0 0 / 55%);
+    font-size: 0.86em;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    text-align: center;
+    white-space: pre-line;
+}
+
+.chat-vault-drive-status-success {
+    border-color: rgb(74 222 128 / 62%);
+    background: rgb(22 101 52 / 72%);
+    color: #ecfdf5;
+    box-shadow: inset 0 0 0 1px rgb(187 247 208 / 7%);
+}
+
+.chat-vault-drive-folder-section {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 9px;
+    background: rgb(0 0 0 / 45%);
+}
+
+.chat-vault-drive-folder-input {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-drive-folder-note {
+    opacity: 0.72;
+    font-size: 0.78em;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+
+.chat-vault-drive-folder-warning {
+    padding: 6px 7px;
+    border: 1px solid rgb(251 191 36 / 40%);
+    border-radius: 7px;
+    background: rgb(120 53 15 / 35%);
+    color: #fef3c7;
+    font-size: 0.75em;
+    line-height: 1.35;
+    text-align: center;
+}
+
+/* Compact control panel, POPKO brand palette.
+   Colours are sampled from popkoproxyhub.com: near-black surfaces layered the
+   way the site stacks cards on a black page, with #8806ce as the brand accent.
+   These are deliberately fixed rather than following the SillyTavern theme, so
+   the border and shadow below carry the whole job of separating a black panel
+   from whatever sits behind it.
+   #8806ce only reaches 2.67:1 on #111, so it is used for borders, fills and
+   gradients — never for text. Text accents use the lighter --chat-vault-purple. */
+#chat_vault_cat_menu {
+    --chat-vault-purple: #a63ff0;
+    --chat-vault-purple-strong: #7824e1;
+    --chat-vault-brand: #8806ce;
+    --chat-vault-purple-soft: rgb(136 6 206 / 22%);
+    --chat-vault-purple-border: rgb(136 6 206 / 45%);
+    --chat-vault-surface: #111;
+    --chat-vault-sunken: #000;
+    --chat-vault-raised: #1a1a1a;
+    --chat-vault-hairline: rgb(255 255 255 / 9%);
+    --chat-vault-text-dim: #a3a3a3;
+    width: min(318px, calc(100vw - 16px));
+    padding: 12px;
+    border-color: var(--chat-vault-purple-border);
+    background:
+        linear-gradient(160deg, rgb(136 6 206 / 12%), transparent 46%),
+        var(--chat-vault-surface);
+    color: #fff;
+    box-shadow:
+        0 14px 38px rgb(0 0 0 / 72%),
+        0 0 0 1px rgb(0 0 0 / 55%),
+        inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+.chat-vault-cat-menu-title {
+    margin-bottom: 9px;
+    color: var(--chat-vault-purple);
+    letter-spacing: 0.01em;
+}
+
+.chat-vault-account-row {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+/* Primary connect action, modelled on a Google sign-in button: white mark chip
+   on the brand gradient. The doubled class outranks SillyTavern's own
+   `.menu_button` so the host theme can't repaint it. The four-colour G is never
+   recoloured. */
+.chat-vault-drive-connect-button.chat-vault-drive-connect-button {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    width: auto;
+    min-height: 40px;
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--chat-vault-purple-border);
+    border-radius: 9px;
+    background: linear-gradient(135deg, var(--chat-vault-purple-strong), var(--chat-vault-brand));
+    color: #fff;
+    font-weight: 650;
+    box-shadow: 0 3px 14px rgb(136 6 206 / 40%);
+}
+
+.chat-vault-drive-connect-button:disabled {
+    opacity: 0.7;
+    box-shadow: none;
+}
+
+.chat-vault-drive-connect-g {
+    display: flex;
+    flex: none;
+    padding: 3px;
+    border-radius: 4px;
+    background: #fff;
+    line-height: 0;
+}
+
+.chat-vault-account-button {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    margin: 0;
+    padding: 7px 9px;
+    overflow: hidden;
+    border: 1px solid var(--chat-vault-purple-border);
+    border-radius: 9px;
+    background: var(--chat-vault-purple-soft);
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.83em;
+    line-height: 1.3;
+    text-align: left;
+}
+
+.chat-vault-account-button[hidden] {
+    display: none !important;
+}
+
+.chat-vault-account-button-connected {
+    border-color: rgb(74 222 128 / 52%);
+    background: rgb(22 101 52 / 30%);
+}
+
+.chat-vault-account-avatar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--chat-vault-purple-strong), var(--chat-vault-brand));
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.chat-vault-account-who {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    line-height: 1.25;
+}
+
+.chat-vault-account-who small {
+    color: #8fd7ac;
+    font-size: 0.82em;
+}
+
+.chat-vault-account-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-vault-account-kebab-icon {
+    display: flex;
+    flex: none;
+    align-items: center;
+    color: #cdbfe6;
+}
+
+.chat-vault-account-menu-toggle {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    min-height: 40px;
+    padding: 0;
+    border: 1px solid var(--chat-vault-purple-border);
+    border-radius: 9px;
+    background: var(--chat-vault-raised);
+    color: #cdbfe6;
+    cursor: pointer;
+}
+
+.chat-vault-account-menu-toggle:hover:not(:disabled) {
+    border-color: rgb(136 6 206 / 60%);
+    background: #241428;
+    color: #fff;
+}
+
+.chat-vault-account-menu-toggle[hidden] {
+    display: none !important;
+}
+
+.chat-vault-account-menu {
+    display: grid;
+    gap: 6px;
+    margin: -2px 0 8px;
+    padding: 8px;
+    border: 1px solid var(--chat-vault-purple-border);
+    border-radius: 9px;
+    background: rgb(12 10 18 / 44%);
+}
+
+.chat-vault-account-menu[hidden],
+.chat-vault-tab-panel[hidden],
+.chat-vault-settings-details[hidden],
+.chat-vault-drive-usage-custom[hidden],
+.chat-vault-drive-usage-section[hidden],
+.chat-vault-drive-disconnect-button[hidden] {
+    display: none !important;
+}
+
+.chat-vault-account-menu .menu_button,
+.chat-vault-restore-menu-actions .menu_button {
+    width: 100%;
+    min-height: 36px;
+    margin: 0;
+}
+
+.chat-vault-drive-disconnect-button {
+    border-color: rgb(248 113 113 / 42%);
+    color: #fecaca;
+}
+
+.chat-vault-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 3px;
+    margin-bottom: 10px;
+    padding: 3px;
+    border: 1px solid rgb(255 255 255 / 9%);
+    border-radius: 10px;
+    background: rgb(0 0 0 / 20%);
+}
+
+.chat-vault-tab-button {
+    min-width: 0;
+    margin: 0;
+    padding: 7px 3px;
+    overflow: hidden;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.78em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chat-vault-tab-button[aria-selected="true"] {
+    border-color: transparent;
+    background: linear-gradient(135deg, var(--chat-vault-purple-strong), var(--chat-vault-brand));
+    color: #fff;
+    font-weight: 650;
+    box-shadow: 0 2px 10px rgb(136 6 206 / 45%);
+}
+
+.chat-vault-tab-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.chat-vault-tab-panel .chat-vault-health-summary,
+.chat-vault-tab-panel .chat-vault-latest-backup-status {
+    margin: 0;
+}
+
+/* Carries the id so it outranks the scoped `.menu_button` repaint below.
+   Without it the primary action loses its gradient and looks secondary. */
+#chat_vault_cat_menu .chat-vault-cat-menu-button:not(:disabled) {
+    border-color: transparent;
+    background: linear-gradient(135deg, var(--chat-vault-purple-strong), var(--chat-vault-brand));
+    color: #fff;
+    font-weight: 650;
+    text-shadow: 0 1px 1px rgb(0 0 0 / 30%);
+    box-shadow: 0 3px 14px rgb(136 6 206 / 40%);
+}
+
+/* Secondary buttons and inputs come from SillyTavern's own `.menu_button` and
+   `.text_pole`. Now that the panel no longer follows the host theme, they must
+   be repainted too — otherwise a light SillyTavern theme puts pale controls on
+   a black panel. Scoped to Chat Vault surfaces so the rest of the app is
+   untouched. */
+#chat_vault_cat_menu .menu_button,
+.chat-vault-restore-panel .menu_button {
+    border: 1px solid rgb(255 255 255 / 12%);
+    background: var(--chat-vault-raised, #1a1a1a);
+    color: #fff;
+    /* SillyTavern's own `.menu_button` carries `filter: grayscale(0.5)`, which
+       desaturates every colour we set here — the brand purple included. Filter is
+       a separate property from background/color, so it has to be cancelled
+       explicitly rather than overridden by repainting. */
+    filter: none;
+}
+
+#chat_vault_cat_menu .menu_button:not(:disabled):hover,
+.chat-vault-restore-panel .menu_button:not(:disabled):hover {
+    border-color: var(--chat-vault-purple-border, rgb(136 6 206 / 45%));
+    background: #241428;
+}
+
+/* SillyTavern disables buttons with `filter: brightness(75%) grayscale(1)` plus
+   `opacity: 0.5`. On this dark panel that faded the label into the background and
+   left the button unreadable. Cancel both, then state the disabled look outright:
+   clearly inactive, but still legible. Matches [disabled] as well as :disabled,
+   because the host stylesheet targets the attribute form. */
+#chat_vault_cat_menu .menu_button:disabled,
+#chat_vault_cat_menu .menu_button[disabled],
+.chat-vault-restore-panel .menu_button:disabled,
+.chat-vault-restore-panel .menu_button[disabled] {
+    filter: none;
+    opacity: 1;
+    border-color: rgb(255 255 255 / 8%);
+    background: #241a2e;
+    color: #a99bba;
+    text-shadow: none;
+    box-shadow: none;
+}
+
+#chat_vault_cat_menu .text_pole,
+.chat-vault-restore-panel .text_pole {
+    border: 1px solid rgb(255 255 255 / 12%);
+    background: var(--chat-vault-sunken, #000);
+    color: #fff;
+}
+
+#chat_vault_cat_menu .text_pole:focus-visible,
+.chat-vault-restore-panel .text_pole:focus-visible {
+    border-color: var(--chat-vault-purple, #a63ff0);
+    outline: none;
+}
+
+.chat-vault-quick-actions {
+    margin-top: 0;
+}
+
+.chat-vault-restore-menu-actions {
+    display: grid;
+    gap: 7px;
+}
+
+.chat-vault-storage-section,
+.chat-vault-autosave-section,
+.chat-vault-security-section {
+    gap: 7px;
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+}
+
+.chat-vault-autosave-section {
+    padding: 9px;
+    border: 1px solid rgb(255 255 255 / 9%);
+    border-radius: 9px;
+    background: rgb(0 0 0 / 40%);
+}
+
+.chat-vault-settings-details {
+    overflow: hidden;
+    border: 1px solid rgb(255 255 255 / 9%);
+    border-radius: 9px;
+    background: rgb(0 0 0 / 40%);
+}
+
+.chat-vault-settings-details > summary {
+    padding: 9px 10px;
+    cursor: pointer;
+    font-size: 0.86em;
+    font-weight: 650;
+    list-style-position: inside;
+}
+
+.chat-vault-settings-details[open] > summary {
+    border-bottom: 1px solid rgb(255 255 255 / 9%);
+    background: var(--chat-vault-purple-soft);
+}
+
+.chat-vault-settings-details > .chat-vault-drive-folder-section,
+.chat-vault-settings-details > .chat-vault-drive-usage-section,
+.chat-vault-settings-details > .chat-vault-security-section {
+    margin: 8px;
+}
+
+.chat-vault-drive-folder-section {
+    border-color: rgb(184 146 255 / 24%);
+    background: rgb(155 108 255 / 7%);
+}
+
+.chat-vault-drive-usage-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border: 1px solid rgb(184 146 255 / 24%);
+    border-radius: 9px;
+    background: rgb(155 108 255 / 7%);
+}
+
+.chat-vault-drive-usage-mode {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-drive-usage-custom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+}
+
+.chat-vault-drive-usage-input {
+    width: 78px;
+    margin: 0;
+    text-align: center;
+}
+
+.chat-vault-drive-usage-status {
+    opacity: 0.76;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.chat-vault-drive-usage-status-warning {
+    opacity: 1;
+    color: #fde68a;
+}
+
+.chat-vault-cat-menu-note {
+    font-size: 0.78em;
+}
+
+.chat-vault-restore-overlay {
+    position: fixed;
+    z-index: 100000;
+    top: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    padding: 10px;
+    background: rgb(0 0 0 / 66%);
+    backdrop-filter: blur(4px);
+}
+
+.chat-vault-restore-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(520px, calc(100vw - 20px));
+    max-height: min(760px, calc(100vh - 20px));
+    max-height: min(760px, calc(100dvh - 20px));
+    padding: 14px;
+    overflow: hidden;
+    border: 1px solid rgb(136 6 206 / 45%);
+    border-radius: 14px;
+    background: #111;
+    color: #fff;
+    box-shadow: 0 14px 42px rgb(0 0 0 / 55%);
+}
+
+.chat-vault-restore-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.chat-vault-restore-header h3 {
+    margin: 0;
+    font-size: 1.08em;
+}
+
+.chat-vault-restore-close {
+    width: 38px;
+    min-width: 38px;
+    margin: 0;
+    padding: 4px;
+    font-size: 1.35em;
+}
+
+.chat-vault-restore-target,
+.chat-vault-restore-preview {
+    margin: 0;
+    padding: 8px 10px;
+    border-radius: 9px;
+    background: rgb(0 0 0 / 55%);
+    line-height: 1.4;
+}
+
+.chat-vault-history-preview {
+    min-height: 92px;
+    max-height: 180px;
+    overflow: auto;
+    font-family: inherit;
+    font-size: 0.86em;
+    white-space: pre-wrap;
+}
+
+.chat-vault-restore-list {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 7px;
+    min-height: 80px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.chat-vault-restore-file {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+    width: 100%;
+    margin: 0;
+    padding: 9px 10px;
+    text-align: left;
+}
+
+.chat-vault-restore-file-selected {
+    outline: 2px solid #a63ff0;
+}
+
+.chat-vault-restore-file-name {
+    overflow-wrap: anywhere;
+    font-weight: 650;
+}
+
+.chat-vault-restore-file small {
+    opacity: 0.7;
+}
+
+.chat-vault-restore-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    gap: 8px;
+}
+
+.chat-vault-restore-actions .menu_button {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-time-machine-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.chat-vault-custom-count-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.chat-vault-custom-count-row[hidden] {
+    display: none !important;
+}
+
+.chat-vault-custom-count-input {
+    width: 64px;
+    margin: 0;
+    text-align: center;
+}
+
+.chat-vault-history-limit-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(88px, 0.8fr);
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-vault-history-limit-select {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-latest-backup-status {
+    padding: 7px 8px;
+    border-radius: 8px;
+    background: rgb(0 0 0 / 55%);
+    font-size: 0.86em;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.chat-vault-latest-backup-detail,
+.chat-vault-health-detail {
+    margin-top: 2px;
+    opacity: 0.72;
+    font-size: 0.92em;
+}
+
+/* Data-loss warning for Encrypted Vault. Amber-on-dark, always visible under
+   the toggle. Deliberately louder than a plain note. */
+.chat-vault-security-warning {
+    display: block;
+    padding: 7px 9px;
+    border: 1px solid rgb(250 204 21 / 45%);
+    border-radius: 8px;
+    background: rgb(113 63 18 / 30%);
+    color: #fde68a;
+    font-size: 0.78em;
+    line-height: 1.5;
+}
+
+/* เกี่ยวกับพ็อกกี้ — the creator's card in Settings. */
+.chat-vault-about-details > summary {
+    color: var(--chat-vault-purple);
+}
+
+.chat-vault-about-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 9px;
+    padding: 12px;
+    text-align: center;
+}
+
+.chat-vault-about-portrait {
+    width: 72px;
+    height: auto;
+    image-rendering: pixelated;
+    filter: drop-shadow(0 0 5px rgb(136 6 206 / 55%));
+}
+
+.chat-vault-about-name {
+    font-size: 1.05em;
+    font-weight: 700;
+}
+
+.chat-vault-about-version {
+    font-size: 0.8em;
+    color: var(--chat-vault-text-dim, #a3a3a3);
+}
+
+.chat-vault-about-message {
+    align-self: stretch;
+    margin: 2px 0 4px;
+    /* Tight side padding buys back text width at this narrow menu size, which is
+       what keeps the last sentence from orphaning a couple of characters. */
+    padding: 10px 10px;
+    border-radius: 8px;
+    background: var(--chat-vault-sunken, #000);
+    /* Smaller and tighter than the rest of the menu on purpose: at this width the
+       old size forced more wraps per sentence, which is what made the block look
+       broken up. Left-aligned because centring gave every line a different width. */
+    font-size: 0.74em;
+    line-height: 1.6;
+    text-align: left;
+    text-wrap: pretty;
+    color: #d7cee4;
+}
+
+/* One sentence per line. The gap is what separates them visually, so a sentence
+   that wraps still reads as one line rather than merging into the next. */
+.chat-vault-about-message-line {
+    margin: 0;
+    /* The author's own line breaks are meaningful, so honour the newlines in the
+       text while still letting a long line wrap. `pre-line` has been supported
+       since long before the browser baseline in ADR-0005. */
+    white-space: pre-line;
+}
+
+.chat-vault-about-message-line + .chat-vault-about-message-line {
+    margin-top: 7px;
+}
+
+.chat-vault-about-creator {
+    font-size: 0.85em;
+    color: #e0b8ff;
+}
+
+.chat-vault-about-follow {
+    margin-top: 2px;
+    font-size: 0.82em;
+    color: var(--chat-vault-text-dim, #a3a3a3);
+}
+
+.chat-vault-about-chip {
+    display: inline-block;
+    padding: 6px 14px;
+    border: 1px solid var(--chat-vault-purple-border, rgb(136 6 206 / 45%));
+    border-radius: 999px;
+    background: rgb(136 6 206 / 14%);
+    color: var(--chat-vault-purple, #a63ff0);
+    font-size: 0.82em;
+    line-height: 1.4;
+    text-decoration: none;
+}
+
+.chat-vault-about-chip:hover {
+    background: rgb(136 6 206 / 26%);
+    text-decoration: none;
+}
+
+.chat-vault-about-link {
+    color: var(--chat-vault-purple);
+    text-decoration: none;
+}
+
+.chat-vault-about-link:hover {
+    text-decoration: underline;
+}
+
+.chat-vault-cat-menu-note {
+    opacity: 0.65;
+    line-height: 1.35;
+    text-align: center;
+    /* Some notes are written as two sentences on two lines; honour the newline
+       while still letting a long line wrap on its own. */
+    white-space: pre-line;
+}
+
+.chat-vault-settings-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-vault-admin-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 12px;
+}
+
+.chat-vault-admin-settings input {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-admin-settings small {
+    opacity: 0.72;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.chat-vault-admin-settings code {
+    user-select: all;
+    -webkit-user-select: all;
+}
+
+.chat-vault-health-results {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 7px;
+    overflow-y: auto;
+}
+
+.chat-vault-health-result {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 9px;
+    background: rgb(0 0 0 / 55%);
+}
+
+.chat-vault-health-result span {
+    opacity: 0.82;
+    font-size: 0.86em;
+}
+
+.chat-vault-health-result-success {
+    border-color: rgb(74 222 128 / 45%);
+}
+
+.chat-vault-health-result-warning {
+    border-color: rgb(250 204 21 / 48%);
+}
+
+.chat-vault-health-result-error {
+    border-color: rgb(248 113 113 / 55%);
+}
+
+.chat-vault-rescue-panel {
+    width: min(680px, calc(100vw - 20px));
+}
+
+.chat-vault-rescue-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+}
+
+.chat-vault-rescue-toolbar > * {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-rescue-file {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 10px;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 9px;
+    background: rgb(0 0 0 / 45%);
+}
+
+.chat-vault-rescue-file input {
+    margin-top: 3px;
+}
+
+.chat-vault-rescue-file-label {
+    min-width: 0;
+    cursor: pointer;
+}
+
+.chat-vault-rescue-file span {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.chat-vault-rescue-preview-button {
+    width: auto;
+    min-width: 82px;
+    margin: 0;
+    padding: 5px 8px;
+    font-size: 0.78em;
+}
+
+.chat-vault-rescue-progress {
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+}
+
+.chat-vault-rescue-file strong {
+    overflow-wrap: anywhere;
+}
+
+.chat-vault-rescue-file small {
+    opacity: 0.7;
+}
+
+@media screen and (max-width: 600px) {
+    #chat_vault_cat_magnet {
+        width: 48px;
+        height: 31px;
+    }
+
+    /* No size override for the image here on purpose. A sprite-era rule used to
+       draw it at 98.3px inside this 48px box, so the visible cat spilled ~50px
+       past the box that actually receives taps: tapping the cat hit the page
+       behind it, and the phone cat came out larger than the desktop one. The
+       base rule (width:100%; height:auto) keeps the drawing and the hit area
+       the same shape, which is what makes the cat tappable. */
+
+    /* 48x31 is under the ~44px touch-target guidance, so widen what the finger
+       can hit without changing what the eye sees. Taps on this halo still count
+       as taps on the cat, because a pseudo-element is not a separate DOM node.
+       Longhand offsets rather than `inset`, which needs Safari 14.1+. */
+    #chat_vault_cat_magnet::after {
+        content: "";
+        position: absolute;
+        top: -9px;
+        right: -9px;
+        bottom: -9px;
+        left: -9px;
+    }
+
+    .chat-vault-time-machine-actions {
+        grid-template-columns: 1fr;
+    }
+
+    .chat-vault-rescue-file {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .chat-vault-rescue-preview-button {
+        grid-column: 2;
+        width: 100%;
+    }
+}

@@ -1,0 +1,10 @@
+{
+  "display_name": "Pocky chat vault",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "POPKO",
+  "version": "1.0"
+}

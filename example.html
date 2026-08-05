@@ -1,0 +1,31 @@
+<div class="sillytavern-chat-vault-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Pocky chat vault</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="chat-vault-settings-row">
+                <input id="chat_vault_show_cat" type="checkbox" />
+                <label for="chat_vault_show_cat">แสดงแมว Pocky chat vault</label>
+            </div>
+            <div class="chat-vault-admin-settings">
+                <label for="chat_vault_google_client_id">Google OAuth Client ID</label>
+                <input
+                    id="chat_vault_google_client_id"
+                    class="text_pole"
+                    type="text"
+                    inputmode="url"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="000000000000-xxxx.apps.googleusercontent.com"
+                />
+                <small>
+                    สำหรับผู้ดูแลระบบ · เพิ่ม Authorized JavaScript origin เป็น
+                    <code id="chat_vault_google_authorized_origin"></code>
+                </small>
+                <small>Client ID ไม่ใช่รหัสลับ ส่วน access token จะไม่ถูกบันทึกใน settings</small>
+            </div>
+        </div>
+    </div>
+</div>
