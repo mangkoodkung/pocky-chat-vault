@@ -30,6 +30,29 @@
                 </small>
                 <small>Client ID ไม่ใช่รหัสลับ ส่วน access token จะไม่ถูกบันทึกใน settings</small>
             </div>
+            <!-- โผล่เฉพาะเครื่องที่ตรวจเจอปลั๊กอินพ็อกกี้ฝั่งเซิร์ฟเวอร์ (ดู README ส่วนตัวเสริม)
+                 เครื่องทั่วไปไม่มีปลั๊กอิน ส่วนนี้จะซ่อนอยู่ตลอด ไม่รบกวนใคร -->
+            <div class="chat-vault-admin-settings" id="chat_vault_plugin_section" hidden>
+                <label for="chat_vault_plugin_secret">ปลั๊กอินพ็อกกี้บนเซิร์ฟเวอร์ (ตัวเสริม)</label>
+                <small id="chat_vault_plugin_status">กำลังตรวจสอบปลั๊กอิน...</small>
+                <input
+                    id="chat_vault_plugin_secret"
+                    class="text_pole"
+                    type="password"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="วาง Client secret (GOCSPX-...)"
+                />
+                <div class="chat-vault-settings-row">
+                    <button id="chat_vault_plugin_save" class="menu_button" type="button">บันทึกลงปลั๊กอิน</button>
+                    <button id="chat_vault_plugin_connect" class="menu_button" type="button" hidden>เชื่อมบัญชี Google</button>
+                </div>
+                <small>
+                    ต้องเพิ่ม Authorized redirect URI ใน Google Cloud เป็น
+                    <code id="chat_vault_plugin_redirect_uri"></code>
+                </small>
+                <small>secret จะถูกส่งไปเก็บที่เซิร์ฟเวอร์ของคุณเครื่องเดียว ไม่ถูกบันทึกไว้ในหน้านี้</small>
+            </div>
         </div>
     </div>
 </div>

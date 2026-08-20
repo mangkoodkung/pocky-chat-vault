@@ -24,6 +24,7 @@ import {
 } from "./vault-storage.js";
 import {
     VaultServerError,
+    configureVaultServer,
     detectVaultServer,
     disconnectVaultServer,
     getVaultServerAuthUrl,
@@ -453,6 +454,111 @@ function canUseVaultServer() {
 }
 
 /*
+ * The plugin's corner of the Extensions settings panel.
+ *
+ * Setting the plugin up used to mean pasting fetch() calls into the browser
+ * console — acceptable for its author, a wall for everyone else, and the reason
+ * it stayed unreleased. This panel replaces that: paste the secret, press save,
+ * press connect. It renders only when the probe actually found a plugin, so on
+ * the vast majority of installs it stays hidden and costs nothing.
+ *
+ * Null-guarded throughout because it runs before and after the settings HTML
+ * exists, and must be harmless in both cases.
+ */
+function refreshPluginAdminPanel() {
+    const section = document.getElementById("chat_vault_plugin_section");
+
+    if (!section) {
+        return;
+    }
+
+    section.hidden = !vaultServerStatus;
+
+    if (!vaultServerStatus) {
+        return;
+    }
+
+    const statusLine = document.getElementById("chat_vault_plugin_status");
+    const redirectOutput = document.getElementById("chat_vault_plugin_redirect_uri");
+    const connectButton = document.getElementById("chat_vault_plugin_connect");
+
+    if (redirectOutput && vaultServerStatus.redirectUri) {
+        redirectOutput.textContent = vaultServerStatus.redirectUri;
+    }
+
+    if (statusLine) {
+        if (!vaultServerStatus.configured) {
+            statusLine.textContent = "พบปลั๊กอินแล้ว · ใส่ Client ID ด้านบนให้เรียบร้อย แล้ววาง Client secret ตรงนี้";
+        } else if (vaultServerStatus.connected) {
+            statusLine.textContent = `เชื่อมแล้ว · ${vaultServerStatus.email || "บัญชี Google"} · เปิดหน้าใหม่ก็เชื่อมเองตลอด`;
+        } else {
+            statusLine.textContent = "ตั้งค่าแล้ว · เหลือกดเชื่อมบัญชี Google ครั้งเดียว";
+        }
+    }
+
+    if (connectButton) {
+        connectButton.hidden = !vaultServerStatus.configured;
+        connectButton.textContent = vaultServerStatus.connected
+            ? "เชื่อมใหม่ / เปลี่ยนบัญชี"
+            : "เชื่อมบัญชี Google";
+    }
+}
+
+async function savePluginConfiguration() {
+    const secretInput = document.getElementById("chat_vault_plugin_secret");
+    const saveButton = document.getElementById("chat_vault_plugin_save");
+    const clientId = String(extension_settings[extensionName].googleDriveClientId || "").trim();
+    const clientSecret = String(secretInput?.value || "").trim();
+
+    if (!clientId) {
+        toastr.warning("ใส่ Google OAuth Client ID ในช่องด้านบนก่อน", extensionDisplayName);
+        return;
+    }
+
+    if (!clientSecret) {
+        toastr.warning("วาง Client secret ก่อนกดบันทึก", extensionDisplayName);
+        return;
+    }
+
+    if (saveButton) {
+        saveButton.disabled = true;
+    }
+
+    try {
+        const { redirectUri } = await configureVaultServer(clientId, clientSecret);
+
+        vaultServerStatus = {
+            ...(vaultServerStatus || {}),
+            configured: true,
+            ...(redirectUri ? { redirectUri } : {}),
+        };
+
+        // The secret has reached the only place it belongs. Keeping it in the
+        // field invites shoulder-surfing screenshots and re-saves; the server
+        // has it now, so the page forgets it.
+        if (secretInput) {
+            secretInput.value = "";
+        }
+
+        toastr.success("บันทึกลงปลั๊กอินแล้ว · กดเชื่อมบัญชี Google ต่อได้เลย", extensionDisplayName);
+    } catch (error) {
+        const message = error instanceof VaultServerError && error.code === "client_id_invalid"
+            ? "Client ID ด้านบนหน้าตาไม่ถูกต้อง ตรวจอีกครั้ง"
+            : "บันทึกไม่สำเร็จ · ตรวจว่าปลั๊กอินยังทำงานอยู่แล้วลองใหม่";
+
+        toastr.error(message, extensionDisplayName);
+        console.error(`[${extensionName}] Plugin configuration failed:`, error);
+    } finally {
+        if (saveButton) {
+            saveButton.disabled = false;
+        }
+
+        refreshPluginAdminPanel();
+        refreshCatStorageControls();
+    }
+}
+
+/*
  * Reconnect through the plugin.
  *
  * This is the path that finally does what every other website does. There is no
@@ -513,6 +619,7 @@ async function restoreGoogleDriveSessionFromServer() {
         return false;
     } finally {
         refreshCatStorageControls();
+        refreshPluginAdminPanel();
     }
 }
 
@@ -2075,6 +2182,7 @@ function createCatMagnet() {
         googleDriveStatusMessage = "ตัดการเชื่อมต่อแล้ว · ไฟล์เดิมยังอยู่บน Drive";
         clearGoogleDriveSession();
         clearGoogleDriveUiSession();
+        refreshPluginAdminPanel();
         accountMenu.hidden = true;
         driveConnectionStatus.setAttribute("aria-expanded", "false");
         accountMenuToggle.setAttribute("aria-expanded", "false");
@@ -4656,6 +4764,22 @@ jQuery(async () => {
 
         $("#chat_vault_show_cat").on("input", onShowCatChange);
         $("#chat_vault_google_client_id").on("change", onGoogleDriveClientIdChange);
+
+        // The plugin panel's two buttons. Bound here where the HTML now exists;
+        // the panel itself stays hidden until the probe below finds a plugin.
+        document.getElementById("chat_vault_plugin_save")
+            ?.addEventListener("click", (event) => {
+                event.preventDefault();
+                void savePluginConfiguration();
+            });
+        document.getElementById("chat_vault_plugin_connect")
+            ?.addEventListener("click", (event) => {
+                event.preventDefault();
+                globalThis.location.assign(getVaultServerAuthUrl(
+                    globalThis.location.pathname + globalThis.location.search,
+                ));
+            });
+
         await loadSettings();
         createCatMagnet();
         registerAutoSaveEvents();
@@ -4671,6 +4795,7 @@ jQuery(async () => {
         detectVaultServer()
             .then(async (status) => {
                 vaultServerStatus = status;
+                refreshPluginAdminPanel();
 
                 if (canUseVaultServer()) {
                     console.log(`[${extensionName}] Pocky Vault plugin detected`);

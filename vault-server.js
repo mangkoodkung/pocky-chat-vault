@@ -158,6 +158,53 @@ export async function requestVaultServerToken() {
     };
 }
 
+/*
+ * Hand the plugin its Google credentials.
+ *
+ * This is the step that used to require pasting a fetch() call into the browser
+ * console, which was fine for the author and a wall for everyone else. The
+ * settings panel calls this instead. The secret only passes through the page on
+ * its way to the user's own server — it is never kept in extension settings,
+ * which sync into the page and are readable by anything running in it.
+ */
+export async function configureVaultServer(clientId, clientSecret) {
+    let response;
+
+    try {
+        response = await fetchWithTimeout(`${PLUGIN_BASE_PATH}/config`, {
+            method: "POST",
+            headers: postHeaders(),
+            body: JSON.stringify({
+                clientId: String(clientId || "").trim(),
+                clientSecret: String(clientSecret || "").trim(),
+            }),
+        });
+    } catch (error) {
+        throw new VaultServerError("server_unreachable", "Could not reach the Pocky Vault plugin");
+    }
+
+    if (response.status === 404) {
+        throw new VaultServerError("server_absent", "The Pocky Vault plugin is not installed");
+    }
+
+    let payload = {};
+
+    try {
+        payload = await response.json();
+    } catch {
+        payload = {};
+    }
+
+    if (!response.ok) {
+        throw new VaultServerError(
+            String(payload.error || "config_failed"),
+            payload.message || "The plugin rejected the configuration",
+        );
+    }
+
+    return { redirectUri: String(payload.redirectUri || "") };
+}
+
 // A full-page navigation, because the authorization-code flow returns to the
 // server rather than to script. returnTo brings the user back where they were.
 export function getVaultServerAuthUrl(returnTo = "/") {
