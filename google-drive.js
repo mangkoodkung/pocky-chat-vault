@@ -102,6 +102,14 @@ function normalizeClientId(clientId) {
     return value;
 }
 
+// An interactive request is waiting on a person: reading a consent screen and
+// picking an account takes as long as it takes. A silent one (`prompt=none`)
+// shows no UI at all, so there is nobody to be slow — if Google has not answered
+// within a few seconds it is not going to, and the only thing a long budget buys
+// is a status line stuck on "กำลังเชื่อมต่อบัญชี Google เดิม..." for five minutes.
+const SILENT_AUTHORIZATION_TIMEOUT_MS = 10_000;
+const INTERACTIVE_AUTHORIZATION_TIMEOUT_MS = 300_000;
+
 async function requestGoogleDriveAccessToken(clientId, {
     prompt = "",
     loginHint = "",
@@ -118,7 +126,9 @@ async function requestGoogleDriveAccessToken(clientId, {
                 "authorization_timeout",
                 "Google authorization did not return to Chat Vault",
             );
-        }, 300_000);
+        }, prompt === "none"
+            ? SILENT_AUTHORIZATION_TIMEOUT_MS
+            : INTERACTIVE_AUTHORIZATION_TIMEOUT_MS);
 
         const finishWithError = (code, message, cause = null) => {
             if (settled) {
@@ -158,7 +168,7 @@ async function requestGoogleDriveAccessToken(clientId, {
 
                     accessToken = response.access_token;
                     accessTokenExpiresAt = Date.now() + (expiresInSeconds * 1000);
-                    cachedFolderIds.clear();
+                    invalidateFolderCaches();
                     cachedBackupFileIds.clear();
                     settled = true;
                     globalThis.clearTimeout(authorizationTimeout);
@@ -261,6 +271,7 @@ function createRedirectState() {
 export function startGoogleDriveRedirectAuthorization(clientId, {
     loginHint = "",
     selectAccount = false,
+    folderName = "",
 } = {}) {
     const normalizedClientId = normalizeClientId(clientId);
     const state = createRedirectState();
@@ -268,10 +279,18 @@ export function startGoogleDriveRedirectAuthorization(clientId, {
 
     // sessionStorage, not localStorage: the value is meaningless after this tab
     // finishes the round trip, and it must not leak into other tabs.
+    //
+    // The folder name rides along for a reason. This call navigates the page away
+    // immediately, and SillyTavern's only save is debounced — a settings write
+    // started here would be killed mid-flight, silently reverting the user's
+    // chosen folder to whatever was last persisted. Writing it here instead means
+    // the value survives the round trip without depending on a timer we are about
+    // to destroy.
     globalThis.sessionStorage.setItem(REDIRECT_STATE_STORAGE_KEY, JSON.stringify({
         state,
         clientId: normalizedClientId,
         redirectUri,
+        folderName: String(folderName || ""),
     }));
 
     const params = new URLSearchParams({
@@ -383,10 +402,14 @@ export async function consumeGoogleDriveRedirectAuthorization() {
 
         accessToken = token;
         accessTokenExpiresAt = Date.now() + (expiresInSeconds * 1000);
-        cachedFolderIds.clear();
+        invalidateFolderCaches();
         cachedBackupFileIds.clear();
 
-        return { status: "connected", expiresAt: accessTokenExpiresAt };
+        return {
+            status: "connected",
+            expiresAt: accessTokenExpiresAt,
+            folderName: String(expected.folderName || ""),
+        };
     } catch (error) {
         return {
             status: "error",
@@ -395,10 +418,41 @@ export async function consumeGoogleDriveRedirectAuthorization() {
     }
 }
 
+/*
+ * Take a token this module did not obtain.
+ *
+ * Both OAuth paths above end by assigning `accessToken` and its expiry. When the
+ * server plugin holds the refresh token, the same two values arrive from it
+ * instead, and every Drive call in this file works unchanged — the token is a
+ * token regardless of who asked Google for it.
+ *
+ * The caches are cleared for the same reason the OAuth paths clear them: a new
+ * token can belong to a different account, and folder and file ids resolved for
+ * the previous one would then point at somebody else's Drive.
+ */
+export function adoptGoogleDriveAccessToken(token, expiresAt) {
+    const value = String(token || "");
+    const expiry = Number(expiresAt) || 0;
+
+    if (!value || expiry <= Date.now()) {
+        throw new GoogleDriveError(
+            "adopted_token_invalid",
+            "The supplied Google token is missing or already expired",
+        );
+    }
+
+    accessToken = value;
+    accessTokenExpiresAt = expiry;
+    invalidateFolderCaches();
+    cachedBackupFileIds.clear();
+
+    return { expiresAt: accessTokenExpiresAt };
+}
+
 export function clearGoogleDriveSession() {
     accessToken = null;
     accessTokenExpiresAt = 0;
-    cachedFolderIds.clear();
+    invalidateFolderCaches();
     cachedBackupFileIds.clear();
     lastOrganizationResult = null;
     lastOrganizationAt = 0;
@@ -590,6 +644,37 @@ async function createChatVaultFolder(folderName, folderKey) {
     return folder;
 }
 
+/*
+ * Folder resolution has to be deduplicated by the in-flight promise, not by its
+ * result.
+ *
+ * Caching only the result leaves the entire find-or-create window unguarded.
+ * Two callers arriving before the first finishes both miss the cache, both
+ * search, both find nothing, and both create — which is how a Drive ends up
+ * holding several identically named Chat Vault folders, with backups scattered
+ * between them. It is not hypothetical: opening SillyTavern starts a session
+ * load while an incoming message can start an upload, and those two reach here
+ * at the same moment. The window reopens on every token refresh, because
+ * adopting a token clears the cache.
+ *
+ * `index.js` already solves this exact shape twice — the reconnect promise and
+ * the pending flush promise — by holding the promise and letting later callers
+ * await the same one. This is that, for folders.
+ */
+const inFlightFolderLookups = new Map();
+
+// Bumped whenever the caches are dropped, which happens when the token changes
+// and therefore possibly the account. A lookup that started before the drop must
+// not write its answer into the cache afterwards: that id was resolved against
+// the previous account and would point into somebody else's Drive.
+let folderCacheGeneration = 0;
+
+function invalidateFolderCaches() {
+    folderCacheGeneration += 1;
+    cachedFolderIds.clear();
+    inFlightFolderLookups.clear();
+}
+
 export async function ensureGoogleDriveFolder() {
     const folderName = activeFolderName;
     const folderKey = await createOpaqueKey(folderName);
@@ -599,22 +684,209 @@ export async function ensureGoogleDriveFolder() {
         return cachedFolder;
     }
 
-    const folder = await findChatVaultFolder(folderName, folderKey)
-        || await createChatVaultFolder(folderName, folderKey);
-    const normalizedFolder = {
-        id: folder.id,
-        name: folder.name || folderName,
-        webViewLink: folder.webViewLink
-            || `https://drive.google.com/drive/folders/${encodeURIComponent(folder.id)}`,
-    };
+    const pendingLookup = inFlightFolderLookups.get(folderKey);
 
-    cachedFolderIds.set(folderKey, normalizedFolder);
-    return normalizedFolder;
+    if (pendingLookup) {
+        return await pendingLookup;
+    }
+
+    const generation = folderCacheGeneration;
+    const lookup = (async () => {
+        const folder = await findChatVaultFolder(folderName, folderKey)
+            || await createChatVaultFolder(folderName, folderKey);
+        const normalizedFolder = {
+            id: folder.id,
+            name: folder.name || folderName,
+            webViewLink: folder.webViewLink
+                || `https://drive.google.com/drive/folders/${encodeURIComponent(folder.id)}`,
+        };
+
+        if (generation === folderCacheGeneration) {
+            cachedFolderIds.set(folderKey, normalizedFolder);
+        }
+
+        return normalizedFolder;
+    })();
+
+    inFlightFolderLookups.set(folderKey, lookup);
+
+    try {
+        return await lookup;
+    } finally {
+        // Only if it is still ours: an invalidation may have replaced the map
+        // contents while this was running.
+        if (inFlightFolderLookups.get(folderKey) === lookup) {
+            inFlightFolderLookups.delete(folderKey);
+        }
+    }
 }
 
 async function getChatVaultFolderId() {
     const folder = await ensureGoogleDriveFolder();
     return folder.id;
+}
+
+/*
+ * Every Chat Vault folder on this Drive, with how many backups each one holds.
+ *
+ * The narrow `drive.file` scope is what makes this both possible and safe: it
+ * sees only what this extension created, so the answer is exactly the set of
+ * Chat Vault folders — never the user's other folders, and no wider grant needed
+ * to ask. A folder the user made by hand and never backed up into is invisible
+ * here, which is correct; it is not one of ours.
+ *
+ * The count is the point. Duplicates created by the old folder race look
+ * identical by name, and the only thing that distinguishes the real one from the
+ * strays is what is inside it.
+ */
+export async function listChatVaultFolders() {
+    const folders = [];
+    let pageToken = "";
+
+    do {
+        const query = [
+            "appProperties has { key='chatVaultRoot' and value='true' }",
+            "mimeType='application/vnd.google-apps.folder'",
+            "trashed=false",
+        ].join(" and ");
+        const url = new URL(`${GOOGLE_DRIVE_API_URL}/files`);
+
+        url.searchParams.set("q", query);
+        url.searchParams.set("spaces", "drive");
+        url.searchParams.set("orderBy", "createdTime");
+        url.searchParams.set("pageSize", "100");
+        url.searchParams.set(
+            "fields",
+            "nextPageToken,files(id,name,webViewLink,createdTime)",
+        );
+
+        if (pageToken) {
+            url.searchParams.set("pageToken", pageToken);
+        }
+
+        const response = await driveRequest(url.href);
+        const result = await response.json();
+
+        if (Array.isArray(result.files)) {
+            folders.push(...result.files);
+        }
+
+        pageToken = String(result.nextPageToken || "");
+    } while (pageToken);
+
+    const files = await listAllGoogleDriveBackupFiles();
+    const backupCounts = new Map();
+    let looseBackupCount = 0;
+
+    for (const file of files) {
+        const parents = Array.isArray(file.parents) ? file.parents : [];
+        const owningFolder = folders.find((folder) => parents.includes(folder.id));
+
+        if (owningFolder) {
+            backupCounts.set(owningFolder.id, (backupCounts.get(owningFolder.id) || 0) + 1);
+        } else {
+            // Sitting in My Drive, or in a folder that has since been trashed.
+            // Selecting any folder sweeps these in, so the number is worth showing.
+            looseBackupCount += 1;
+        }
+    }
+
+    return {
+        folders: folders.map((folder) => ({
+            id: folder.id,
+            name: String(folder.name || DEFAULT_GOOGLE_DRIVE_FOLDER_NAME),
+            createdTime: String(folder.createdTime || ""),
+            webViewLink: folder.webViewLink
+                || `https://drive.google.com/drive/folders/${encodeURIComponent(folder.id)}`,
+            backupCount: backupCounts.get(folder.id) || 0,
+        })),
+        activeFolderName,
+        looseBackupCount,
+        totalBackupCount: files.length,
+    };
+}
+
+/*
+ * Point the session at one specific folder.
+ *
+ * Normally a folder is found by hashing its name, which is fine while names are
+ * unique. Duplicates from the old race are not unique — several folders called
+ * "Chat Vault", and a name lookup can only ever return whichever one Drive lists
+ * first. Picking one out of a dropdown has to mean picking *that* one, so the
+ * choice is seeded straight into the cache under the name's key.
+ *
+ * This lasts for the session. It does not need to last longer: the reason to
+ * pick between identical names is to sort out duplicates, and once the strays
+ * are cleaned up the name resolves unambiguously on its own.
+ */
+export async function pinGoogleDriveFolder(folder) {
+    const name = setGoogleDriveFolderName(folder?.name);
+    const folderKey = await createOpaqueKey(name);
+    const pinned = {
+        id: String(folder.id),
+        name,
+        webViewLink: folder.webViewLink
+            || `https://drive.google.com/drive/folders/${encodeURIComponent(folder.id)}`,
+    };
+
+    cachedFolderIds.set(folderKey, pinned);
+    lastOrganizationResult = null;
+    lastOrganizationAt = 0;
+
+    return pinned;
+}
+
+/*
+ * Move an empty Chat Vault folder to the Drive trash.
+ *
+ * Trash, never delete. The recovery guarantee this whole extension exists to
+ * provide would be hollow if its own cleanup could destroy something outright —
+ * a trashed folder can be restored for thirty days, a deleted one cannot.
+ *
+ * Emptiness is re-checked here rather than trusted from whatever the UI counted
+ * a moment ago, because a backup can land in the folder between the two. And it
+ * is checked against what this app can see: `drive.file` hides anything the user
+ * put there by hand, so the caller has to say so before confirming.
+ */
+export async function trashChatVaultFolder(folderId) {
+    const id = String(folderId || "");
+
+    if (!id) {
+        throw new GoogleDriveError("folder_id_missing", "No folder was given to clean up");
+    }
+
+    const url = new URL(`${GOOGLE_DRIVE_API_URL}/files`);
+
+    url.searchParams.set(
+        "q",
+        `'${escapeDriveQueryValue(id)}' in parents and trashed=false`,
+    );
+    url.searchParams.set("spaces", "drive");
+    url.searchParams.set("pageSize", "1");
+    url.searchParams.set("fields", "files(id)");
+
+    const listResponse = await driveRequest(url.href);
+    const listing = await listResponse.json();
+
+    if (listing.files?.length) {
+        throw new GoogleDriveError(
+            "folder_not_empty",
+            "The folder is no longer empty and was left alone",
+        );
+    }
+
+    await driveRequest(
+        `${GOOGLE_DRIVE_API_URL}/files/${encodeURIComponent(id)}?fields=id,trashed`,
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json; charset=UTF-8" },
+            body: JSON.stringify({ trashed: true }),
+        },
+    );
+
+    invalidateFolderCaches();
+
+    return true;
 }
 
 function createLatestFileName(backup) {
@@ -669,6 +941,83 @@ async function createContentHash(content) {
     const digest = await createOpaqueKey(String(content || ""));
 
     return digest.startsWith("fnv1a-") ? digest : `sha256-${digest}`;
+}
+
+/*
+ * Drive property budgeting.
+ *
+ * Drive allows a file property 124 bytes of UTF-8, counting the key and the
+ * value together, and rejects the entire upload if any one property exceeds it.
+ * `slice()` counts UTF-16 code units, which equals the byte count only for
+ * ASCII. A Thai character is three bytes, so `String(name).slice(0, 100)` passes
+ * for an English name and produces 300 bytes for a Thai one — and the backup
+ * does not fail partially, it fails completely, with a message about properties
+ * that says nothing about names.
+ *
+ * That is the wrong failure for this project to have: the extension is written
+ * in Thai, for Thai users, and the case that breaks is the ordinary one. So
+ * every human-readable property is trimmed by bytes, against the budget left
+ * after its own key, and cut on character boundaries so a truncated name is
+ * still a name rather than a mojibake fragment.
+ *
+ * Identity properties are deliberately NOT routed through here. `backupKey`,
+ * `entityKey` and `contentHash` are hex digests of fixed length that queries
+ * match on exactly; they cannot overflow, and silently shortening one would
+ * orphan the file it identifies instead of failing loudly.
+ */
+const DRIVE_PROPERTY_MAX_BYTES = 124;
+
+function utf8ByteLength(value) {
+    if (typeof globalThis.TextEncoder !== "function") {
+        // Worst case rather than optimistic: three bytes per character keeps the
+        // estimate on the safe side of the limit on an engine without TextEncoder.
+        return String(value).length * 3;
+    }
+
+    return new TextEncoder().encode(String(value)).length;
+}
+
+export function truncateToUtf8Bytes(value, maxBytes) {
+    const text = String(value);
+
+    if (maxBytes <= 0) {
+        return "";
+    }
+
+    if (utf8ByteLength(text) <= maxBytes) {
+        return text;
+    }
+
+    let result = "";
+    let used = 0;
+
+    // for...of walks code points, so a surrogate pair or a Thai cluster is
+    // weighed and kept whole rather than split down the middle.
+    for (const character of text) {
+        const size = utf8ByteLength(character);
+
+        if (used + size > maxBytes) {
+            break;
+        }
+
+        result += character;
+        used += size;
+    }
+
+    return result;
+}
+
+export function setDriveProperty(properties, key, value) {
+    const budget = DRIVE_PROPERTY_MAX_BYTES - utf8ByteLength(key);
+    const text = truncateToUtf8Bytes(value, budget);
+
+    // An empty result means the value was blank, or the key alone ate the
+    // budget. Either way the property carries nothing and is left off.
+    if (text) {
+        properties[key] = text;
+    }
+
+    return text;
 }
 
 function readTimestamp(value) {
@@ -1040,11 +1389,11 @@ export async function uploadBackupToGoogleDrive(backup, allowRecreate = true) {
     };
 
     if (backup.savedAt) {
-        metadata.appProperties.chatVaultSavedAt = String(backup.savedAt).slice(0, 64);
+        setDriveProperty(metadata.appProperties, "chatVaultSavedAt", backup.savedAt);
     }
 
     if (backup.snapshotId) {
-        metadata.appProperties.chatVaultSnapshotId = String(backup.snapshotId).slice(0, 100);
+        setDriveProperty(metadata.appProperties, "chatVaultSnapshotId", backup.snapshotId);
     }
 
     if (Number.isFinite(Number(backup.messageCount))) {
@@ -1053,23 +1402,23 @@ export async function uploadBackupToGoogleDrive(backup, allowRecreate = true) {
 
     if (backup.isCheckpoint) {
         metadata.appProperties.chatVaultCheckpoint = "true";
-        metadata.appProperties.chatVaultCheckpointName = String(
+        setDriveProperty(
+            metadata.appProperties,
+            "chatVaultCheckpointName",
             backup.checkpointName || "จุดคืนค่า",
-        ).slice(0, 100);
+        );
     }
 
     if (backup.triggerReason) {
-        metadata.appProperties.chatVaultTriggerReason = String(backup.triggerReason)
-            .slice(0, 64);
+        setDriveProperty(metadata.appProperties, "chatVaultTriggerReason", backup.triggerReason);
     }
 
     if (backup.entityType) {
-        metadata.appProperties.chatVaultEntityType = String(backup.entityType).slice(0, 24);
+        setDriveProperty(metadata.appProperties, "chatVaultEntityType", backup.entityType);
     }
 
     if (backup.characterName) {
-        metadata.appProperties.chatVaultCharacterName = String(backup.characterName)
-            .slice(0, 100);
+        setDriveProperty(metadata.appProperties, "chatVaultCharacterName", backup.characterName);
     }
 
     if (drivePayload.encrypted) {

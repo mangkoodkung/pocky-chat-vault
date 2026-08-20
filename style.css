@@ -293,6 +293,43 @@
     margin: 0;
 }
 
+/* Picking the backup folder from a list of what exists, instead of typing a name
+   and hoping. Laid out to match the input it sits above, so the two read as one
+   control whichever mode the section is in. */
+.chat-vault-drive-folder-select {
+    width: 100%;
+    margin: 0;
+}
+
+.chat-vault-drive-folder-select[hidden],
+.chat-vault-drive-folder-input[hidden],
+.chat-vault-drive-folder-cleanup-button[hidden],
+.chat-vault-drive-folder-loose-note[hidden] {
+    display: none !important;
+}
+
+/* Amber, not red: this moves empty folders to the trash, which is recoverable.
+   Red is reserved in this UI for states that need attention, and a tidy-up that
+   the user opted into is not one of them. */
+.chat-vault-drive-folder-cleanup-button.chat-vault-drive-folder-cleanup-button {
+    border-color: rgb(251 191 36 / 45%);
+    background: rgb(120 53 15 / 30%);
+    color: #fde68a;
+    font-size: 0.82em;
+}
+
+.chat-vault-drive-folder-loose-note {
+    padding: 6px 7px;
+    border: 1px solid rgb(184 146 255 / 30%);
+    border-radius: 7px;
+    background: rgb(155 108 255 / 12%);
+    color: #e6dcff;
+    font-size: 0.75em;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+
 .chat-vault-drive-folder-note {
     opacity: 0.72;
     font-size: 0.78em;

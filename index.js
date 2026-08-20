@@ -23,16 +23,27 @@ import {
     saveBackupSnapshot,
 } from "./vault-storage.js";
 import {
+    VaultServerError,
+    detectVaultServer,
+    disconnectVaultServer,
+    getVaultServerAuthUrl,
+    requestVaultServerToken,
+} from "./vault-server.js";
+import {
     DEFAULT_GOOGLE_DRIVE_FOLDER_NAME,
     GoogleDriveError,
+    adoptGoogleDriveAccessToken,
     clearGoogleDriveSession,
     connectGoogleDrive,
     downloadGoogleDriveBackup,
     getGoogleDriveAccount,
     isGoogleDriveConnected,
+    listChatVaultFolders,
     listGoogleDriveBackups,
     normalizeGoogleDriveFolderName,
     organizeGoogleDriveBackups,
+    pinGoogleDriveFolder,
+    trashChatVaultFolder,
     prepareGoogleDrive,
     consumeGoogleDriveRedirectAuthorization,
     getGoogleDriveRedirectUri,
@@ -78,59 +89,30 @@ import {
     parseVaultPackage,
     restoreArchiveAttachments,
 } from "./vault-archive.js";
+import {
+    extensionDisplayName,
+    extensionFolderPath,
+    extensionName,
+    extensionVersion,
+} from "./vault-env.js";
+import {
+    bytesToBase64,
+    clamp,
+    downloadBackupContent,
+    downloadRecoveryKey,
+    formatBackupPreview,
+    formatRestoreDate,
+} from "./vault-format.js";
+import {
+    getCatHealthImageUrl,
+    placeCatFromSettings,
+    preloadCatHealthImages,
+    saveCatPosition,
+} from "./vault-cat.js";
+import { createPokkiAboutSection } from "./vault-about.js";
 
-// Settings key. This is an identity, not a location: it must stay stable forever,
-// because every user's saved settings live under this key. Renaming it would
-// orphan their settings and silently reset the extension to defaults.
-const extensionName = "sillytavern-chat-vault";
-const extensionVersion = "1.1";
-
-// The name the user sees — menu headings, toast titles, the settings panel.
-// Deliberately separate from extensionName above: that one is a storage key and
-// must never move, this one is free to be rebranded.
-const extensionDisplayName = "Pocky chat vault";
-
-// Where this copy is actually installed. Derived from the module's own URL rather
-// than assembled from extensionName, because the install folder is named after
-// whatever repository or ZIP the user installed from — it is not ours to predict.
-// Getting this wrong costs the cat artwork and the settings panel, both of which
-// are fetched by path.
-function resolveExtensionFolderPath() {
-    try {
-        return new URL(".", import.meta.url).pathname.replace(/\/+$/, "");
-    } catch (error) {
-        return `scripts/extensions/third-party/${extensionName}`;
-    }
-}
-
-const extensionFolderPath = resolveExtensionFolderPath();
 const GOOGLE_DRIVE_SILENT_RECONNECT_COOLDOWN_MS = 5 * 60 * 1000;
 const GOOGLE_DRIVE_PENDING_RETRY_DELAY_MS = 65_000;
-
-// One drawing per health state. The file names describe what the user sees,
-// while the keys stay tied to the health states in vault-health.js.
-const CAT_HEALTH_IMAGE_FILES = {
-    idle: "idle.png",
-    healthy: "online.png",
-    pending: "offline.png",
-    attention: "disconnect.png",
-};
-
-function getCatHealthImageUrl(state) {
-    const fileName = CAT_HEALTH_IMAGE_FILES[state] || CAT_HEALTH_IMAGE_FILES.idle;
-
-    return `${extensionFolderPath}/image/${fileName}?v=${extensionVersion}`;
-}
-
-// Warm the browser cache so the first state change swaps instantly instead of
-// blanking the cat while the next drawing downloads.
-function preloadCatHealthImages() {
-    for (const state of Object.keys(CAT_HEALTH_IMAGE_FILES)) {
-        const preloaded = new Image();
-
-        preloaded.src = getCatHealthImageUrl(state);
-    }
-}
 
 // Inline, self-contained icons. The project never fetches external assets, so
 // the Google mark ships as SVG rather than a linked image. The G is the
@@ -151,91 +133,6 @@ function replaceElementChildren(element, ...nodes) {
     if (nodes.length > 0) {
         element.append(...nodes);
     }
-}
-
-// Pokki's calling card — the note installers meet in Settings → เกี่ยวกับพ็อกกี้.
-// Leave POKKI_GITHUB_URL empty and the GitHub row simply does not render; fill
-// it in later and the link appears on its own.
-const POKKI_GITHUB_URL = "";
-const POKKI_BIO_URL = "https://lnk.bio/popko";
-const POKKI_BIO_LABEL = "@pokobpopko · Lnk.Bio";
-const POKKI_CREATOR = "สร้างโดย เจ๊ปอกอ (majesty.pop)";
-// Pokki's note to whoever installs this, in her own words. Each array entry is
-// one block; the newlines inside a block are deliberate line breaks the author
-// wrote, kept as-is by `white-space: pre-line` in the stylesheet. Long lines
-// still wrap on their own at the menu width.
-const POKKI_ABOUT_LINES = [
-    "สวัสดีจ้ะ พี่จ๋าทุกคน~\nพ็อกกี้ของเจ๊ปอกอกลับมาแล้ววว 🐾",
-    "ภารกิจของหนูคือคอยกอดแชทของพี่จ๋าไว้ให้แน่นที่สุด!\n(แน่นพอ ๆ กับตอนที่หนูกอดเจ๊ปอกอเพื่อขอเงินไปซื้อขนมเลย 🤭)",
-    "เพียงเชื่อมต่อหนูกับ Google Drive\nข้อมูลแชทของพี่จ๋าก็จะถูกสำรองเอาไว้แบบ Realtime!\nไม่ต้องกลัวข้อมูลหายอีกต่อไป🐾",
-];
-
-// A safe external link: new tab, no referrer, opener severed.
-function createPokkiExternalLink(url, label) {
-    const link = document.createElement("a");
-
-    link.className = "chat-vault-about-link";
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = label;
-
-    return link;
-}
-
-// The body of the "เกี่ยวกับพ็อกกี้" tab. Kept self-contained so the creator's
-// details live in one obvious place.
-function createPokkiAboutSection() {
-    const body = document.createElement("div");
-    const portrait = document.createElement("img");
-    const name = document.createElement("div");
-    const version = document.createElement("div");
-    const message = document.createElement("div");
-    const creator = document.createElement("div");
-    const follow = document.createElement("div");
-
-    body.className = "chat-vault-about-body";
-
-    portrait.className = "chat-vault-about-portrait";
-    portrait.src = getCatHealthImageUrl("healthy");
-    portrait.alt = "";
-    portrait.draggable = false;
-
-    name.className = "chat-vault-about-name";
-    name.textContent = extensionDisplayName;
-    version.className = "chat-vault-about-version";
-    version.textContent = `เวอร์ชัน ${extensionVersion} · ผู้ช่วยแมวเก็บแชท`;
-
-    message.className = "chat-vault-about-message";
-
-    for (const line of POKKI_ABOUT_LINES) {
-        const lineElement = document.createElement("p");
-
-        lineElement.className = "chat-vault-about-message-line";
-        lineElement.textContent = line;
-        message.append(lineElement);
-    }
-
-    creator.className = "chat-vault-about-creator";
-    creator.textContent = POKKI_CREATOR;
-
-    body.append(portrait, name, version, message, creator);
-
-    // Links are pill chips on their own line so they never wrap into the middle
-    // of a sentence the way an inline link did.
-    follow.className = "chat-vault-about-follow";
-    follow.textContent = "ติดตามเจ๊ปอกอได้ที่";
-    const bioChip = createPokkiExternalLink(POKKI_BIO_URL, POKKI_BIO_LABEL);
-    bioChip.className = "chat-vault-about-chip";
-    body.append(follow, bioChip);
-
-    if (POKKI_GITHUB_URL) {
-        const gh = createPokkiExternalLink(POKKI_GITHUB_URL, `GitHub · โค้ดของ ${extensionDisplayName}`);
-        gh.className = "chat-vault-about-chip";
-        body.append(gh);
-    }
-
-    return body;
 }
 
 const defaultSettings = {
@@ -313,6 +210,40 @@ async function uploadBackupAndTrackState(backup) {
     return file;
 }
 
+/*
+ * A folder name that has to outlive a navigation.
+ *
+ * Both the plugin's authorization and the iOS redirect leave the page entirely,
+ * and SillyTavern's only save is debounced — a settings write started just
+ * before either one is killed before it lands, silently reverting the folder the
+ * user just chose. The iOS path carries the name inside its own authorization
+ * state; the plugin path has no such envelope, so it parks the value here and
+ * collects it on the way back in.
+ */
+const PENDING_FOLDER_STORAGE_KEY = "chatVaultPendingFolderName";
+
+function rememberPendingFolderName(folderName) {
+    try {
+        globalThis.sessionStorage.setItem(PENDING_FOLDER_STORAGE_KEY, String(folderName || ""));
+    } catch {
+        // Storage can be unavailable or full. Losing this means the previously
+        // saved folder name stands, which is the same outcome as before it
+        // existed — never a reason to block the connection itself.
+    }
+}
+
+function takePendingFolderName() {
+    try {
+        const pending = globalThis.sessionStorage.getItem(PENDING_FOLDER_STORAGE_KEY);
+
+        globalThis.sessionStorage.removeItem(PENDING_FOLDER_STORAGE_KEY);
+
+        return String(pending || "");
+    } catch {
+        return "";
+    }
+}
+
 async function loadSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
 
@@ -380,6 +311,15 @@ async function loadSettings() {
     extension_settings[extensionName].driveUsageWarningGb = normalizeDriveUsageWarningGb(
         extension_settings[extensionName].driveUsageWarningGb,
     );
+
+    // Collected before the folder name is normalised below, so a name that
+    // survived a navigation is treated exactly like one that came from settings.
+    const pendingFolderName = takePendingFolderName();
+
+    if (pendingFolderName) {
+        extension_settings[extensionName].googleDriveFolderName = pendingFolderName;
+        saveSettingsDebounced();
+    }
 
     try {
         extension_settings[extensionName].googleDriveFolderName = setGoogleDriveFolderName(
@@ -488,15 +428,127 @@ async function loadGoogleDriveSessionDetails() {
     return { account, folder, movedCount, totalCount };
 }
 
+/*
+ * What the server plugin is, from this file's point of view.
+ *
+ * `null` means "no plugin on this instance" and is the normal state for an
+ * ordinary install. It is filled in once at load by a probe and is not
+ * re-checked: a plugin cannot appear or disappear without restarting
+ * SillyTavern, which reloads this page anyway.
+ */
+let vaultServerStatus = null;
+
+/*
+ * Installed is not the same as usable.
+ *
+ * A plugin that is present but has never been given a Client ID and secret can
+ * do nothing: /auth/start answers 400 and /token answers 409, permanently.
+ * Treating mere presence as "use this path" strands that install with no way to
+ * connect at all — the plugin route cannot work, and the browser route has
+ * already been stood down in favour of it. So every choice between the two
+ * paths asks this, never the bare existence of the status object.
+ */
+function canUseVaultServer() {
+    return Boolean(vaultServerStatus?.configured);
+}
+
+/*
+ * Reconnect through the plugin.
+ *
+ * This is the path that finally does what every other website does. There is no
+ * popup to be blocked and no gesture to wait for, because nothing is being
+ * authorized here — the grant already exists on the server, and this is just
+ * collecting a token minted from it. It works identically on a reload, on iOS,
+ * and on a machine that has not been touched in a week.
+ *
+ * Note what is NOT required: `googleDrivePreviouslyConnected`, and the Client ID
+ * in extension settings. Those describe the browser-only flow's memory of a past
+ * authorization. When the server holds the grant, the server is the record, and
+ * a fresh browser profile with empty settings connects just the same.
+ */
+async function restoreGoogleDriveSessionFromServer() {
+    const settings = extension_settings[extensionName];
+
+    if (!canUseVaultServer() || settings.storageDestination !== "google_drive") {
+        return false;
+    }
+
+    try {
+        const { accessToken, expiresAt } = await requestVaultServerToken();
+
+        adoptGoogleDriveAccessToken(accessToken, expiresAt);
+        setGoogleDriveFolderName(
+            normalizeGoogleDriveFolderName(
+                settings.googleDriveFolderName || DEFAULT_GOOGLE_DRIVE_FOLDER_NAME,
+            ),
+        );
+
+        const { account, folder, movedCount } = await loadGoogleDriveSessionDetails();
+
+        vaultServerStatus = { ...vaultServerStatus, connected: true, email: account.emailAddress };
+        googleDriveReconnectRetryAfter = 0;
+        googleDriveStatusMessage = movedCount > 0
+            ? `เชื่อมอัตโนมัติแล้ว · ย้ายไฟล์เดิม ${movedCount} ไฟล์เข้า “${folder.name}”`
+            : `เชื่อมอัตโนมัติแล้ว · โฟลเดอร์ “${folder.name}”`;
+        console.log(`[${extensionName}] Connected through the Pocky Vault plugin`);
+
+        return true;
+    } catch (error) {
+        vaultServerStatus = { ...vaultServerStatus, connected: false };
+        clearGoogleDriveSession();
+        clearGoogleDriveUiSession();
+
+        // The seven-day case for a consent screen still in Testing. It is an
+        // expected part of running that way, so it gets an instruction rather
+        // than an error: one tap and it is another week.
+        if (error instanceof VaultServerError && error.code === "server_grant_expired") {
+            googleDriveStatusMessage = "สิทธิ์ Google หมดอายุแล้ว · แตะเชื่อมบัญชีอีกครั้ง";
+        } else if (error instanceof VaultServerError && error.code === "server_not_connected") {
+            googleDriveStatusMessage = "แตะ “ต่อบัญชี Google ให้พ็อกกี้” เพื่อเชื่อมครั้งแรก";
+        } else {
+            googleDriveStatusMessage = "เชื่อมผ่านปลั๊กอินไม่สำเร็จ · แตะเพื่อลองใหม่";
+            console.warn(`[${extensionName}] Plugin connection failed:`, error);
+        }
+
+        return false;
+    } finally {
+        refreshCatStorageControls();
+    }
+}
+
 async function restoreRememberedGoogleDriveSessionOnce() {
     const settings = extension_settings[extensionName];
     const clientId = String(settings.googleDriveClientId || "").trim();
+
+    // The plugin is tried first and unconditionally, because when it is present
+    // it is strictly better: silent, gesture-free, and unaffected by the reload
+    // that empties this page's memory. Its absence costs one already-completed
+    // probe, not a request.
+    if (canUseVaultServer()) {
+        return await restoreGoogleDriveSessionFromServer();
+    }
 
     if (
         settings.storageDestination !== "google_drive"
         || !settings.googleDrivePreviouslyConnected
         || !clientId
     ) {
+        return false;
+    }
+
+    // Silent reconnect runs through the popup token client, which on iOS can
+    // never return a token — the same WebKit limitation that made the redirect
+    // flow necessary in the first place. Attempting it there is not a reconnect
+    // that might fail; it is one that cannot succeed, and every attempt costs a
+    // stuck status line and ends by clearing the remembered account.
+    //
+    // The page is not sent to Google on its own. Navigating away from a chat the
+    // user did not ask to leave is worse than the state this avoids, so the
+    // connect button carries it instead: one tap, and the redirect takes over.
+    if (shouldUseGoogleDriveRedirect()) {
+        googleDriveStatusMessage = "แตะ “ต่อบัญชี Google ให้พ็อกกี้” เพื่อเชื่อมต่ออีกครั้ง";
+        refreshCatStorageControls();
+
         return false;
     }
 
@@ -551,9 +603,16 @@ async function finishGoogleDriveRedirectConnection() {
     }
 
     try {
-        setGoogleDriveFolderName(
-            normalizeGoogleDriveFolderName(settings.googleDriveFolderName),
+        // The folder the user typed before leaving. It comes back with the
+        // authorization rather than from settings, because the settings write
+        // that started just before the navigation had no chance to finish. Fall
+        // back to the stored value when this round trip carried nothing.
+        const carriedFolderName = normalizeGoogleDriveFolderName(
+            result.folderName || settings.googleDriveFolderName,
         );
+
+        settings.googleDriveFolderName = carriedFolderName;
+        setGoogleDriveFolderName(carriedFolderName);
 
         const { account, folder, movedCount } = await loadGoogleDriveSessionDetails();
 
@@ -575,6 +634,74 @@ async function finishGoogleDriveRedirectConnection() {
     }
 
     refreshCatStorageControls();
+
+    return true;
+}
+
+let gestureReconnectArmed = false;
+
+/*
+ * Reconnecting without asking, on a platform that has no silent authorization.
+ *
+ * Google's token client has no quiet variant. `prompt=none` suppresses the
+ * account chooser and the consent screen, but the call still opens a dialog —
+ * "only the dialog UX is supported", in Google's words — and a dialog opened
+ * without a user gesture is blocked by every browser. Reconnecting during load,
+ * which is what this extension did from 1.0 onward, therefore never had a path
+ * to success: it opened a window the browser refused, reported the refusal as a
+ * failed reconnect, and cleared the remembered account on its way out. That is
+ * the whole of the "log in again on every visit" report, and it is why ADR-0003
+ * point 6 needs rewriting rather than re-reading.
+ *
+ * A gesture is the missing ingredient, and the page is about to receive one: the
+ * user is here to do something. Riding the first interaction turns the blocked
+ * call into an allowed one, and with consent already granted Google answers and
+ * closes the window without rendering anything the user has to deal with.
+ *
+ * Two things this deliberately is not. It is not armed on iOS, where a popup
+ * cannot return a token to its opener no matter what permitted it — the connect
+ * button runs the redirect there instead. And it never touches the event it
+ * rides on: no preventDefault, no await in the listener, nothing that could make
+ * the click the user actually meant feel slower or land somewhere else.
+ */
+function armGestureDriveReconnect() {
+    const settings = extension_settings[extensionName];
+
+    if (
+        gestureReconnectArmed
+        || settings.storageDestination !== "google_drive"
+        || !settings.googleDrivePreviouslyConnected
+        || !String(settings.googleDriveClientId || "").trim()
+        || shouldUseGoogleDriveRedirect()
+        // With the plugin present there is nothing for a gesture to unlock: the
+        // token arrives from the server without a dialog at all.
+        || canUseVaultServer()
+    ) {
+        return false;
+    }
+
+    gestureReconnectArmed = true;
+
+    const attemptReconnect = () => {
+        document.removeEventListener("pointerdown", attemptReconnect, true);
+        document.removeEventListener("keydown", attemptReconnect, true);
+
+        // Fired, not awaited. A rejection here is an ordinary "could not
+        // reconnect", already handled downstream by falling back to the button.
+        void restoreRememberedGoogleDriveSession().then((restored) => {
+            if (restored) {
+                return flushPendingDriveBackups();
+            }
+
+            return undefined;
+        });
+    };
+
+    // Capture phase so the listener is reached before anything downstream can
+    // stop the event, and only one shot: a user who is not connected should not
+    // be paying for a fresh attempt on every click they make.
+    document.addEventListener("pointerdown", attemptReconnect, true);
+    document.addEventListener("keydown", attemptReconnect, true);
 
     return true;
 }
@@ -617,22 +744,28 @@ function schedulePendingDriveRetry(delayMs = GOOGLE_DRIVE_PENDING_RETRY_DELAY_MS
 
     pendingDriveRetryTimer = globalThis.setTimeout(() => {
         pendingDriveRetryTimer = null;
-        void flushPendingDriveBackups();
+        // Same reasoning as the retry events: a timer is not a user asking to
+        // sign in. It delivers what is queued if a session is open.
+        void flushPendingDriveBackups({ allowReconnect: false });
     }, Math.max(1_000, Number(delayMs) || GOOGLE_DRIVE_PENDING_RETRY_DELAY_MS));
 }
 
-async function flushPendingDriveBackupsOnce() {
+async function flushPendingDriveBackupsOnce({ allowReconnect = true } = {}) {
     const settings = extension_settings[extensionName];
 
     if (isBackupDisabled(settings) || settings.storageDestination !== "google_drive") {
         return { uploadedCount: 0, pendingCount: 0 };
     }
 
-    if (
-        !isGoogleDriveConnected()
-        && !await restoreRememberedGoogleDriveSession()
-    ) {
-        return { uploadedCount: 0, pendingCount: 0 };
+    // A flush that nobody asked for must not start an authorization. Background
+    // triggers fire far more often than they look like they do — visibilitychange
+    // alone lands on every app switch, screen lock and tab change — and each
+    // reconnect attempt that fails clears the remembered account, so a phone left
+    // switching between apps can walk itself out of a working session.
+    if (!isGoogleDriveConnected()) {
+        if (!allowReconnect || !await restoreRememberedGoogleDriveSession()) {
+            return { uploadedCount: 0, pendingCount: 0 };
+        }
     }
 
     const accountHint = googleDriveAccount?.emailAddress
@@ -668,12 +801,12 @@ async function flushPendingDriveBackupsOnce() {
     return { uploadedCount, pendingCount: pendingBackups.length - uploadedCount };
 }
 
-async function flushPendingDriveBackups() {
+async function flushPendingDriveBackups(options = {}) {
     if (pendingDriveFlushPromise) {
         return await pendingDriveFlushPromise;
     }
 
-    pendingDriveFlushPromise = flushPendingDriveBackupsOnce();
+    pendingDriveFlushPromise = flushPendingDriveBackupsOnce(options);
 
     try {
         return await pendingDriveFlushPromise;
@@ -687,54 +820,23 @@ function registerDriveRetryEvents() {
         return;
     }
 
+    // Both of these say "a moment that might be a good time to send what is
+    // queued", not "the user wants to connect". They send when a session is
+    // already open and stay quiet otherwise; reconnecting is the connect
+    // button's job, where it is something the user chose.
     globalThis.addEventListener("online", () => {
-        void flushPendingDriveBackups();
+        void flushPendingDriveBackups({ allowReconnect: false });
     });
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
-            void flushPendingDriveBackups();
+            void flushPendingDriveBackups({ allowReconnect: false });
         }
     });
     driveRetryEventsRegistered = true;
 }
 
-function clamp(value, minimum, maximum) {
-    return Math.min(Math.max(value, minimum), maximum);
-}
-
 function isBackupDisabled(settings = extension_settings[extensionName]) {
     return normalizeAutoSaveMode(settings?.autoSaveMode) === AUTO_SAVE_MODE_DISABLED;
-}
-
-function bytesToBase64(bytes) {
-    const values = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    let binary = "";
-
-    for (let offset = 0; offset < values.length; offset += 0x8000) {
-        binary += String.fromCharCode(...values.subarray(offset, offset + 0x8000));
-    }
-
-    return btoa(binary);
-}
-
-function downloadRecoveryKey(recoveryKey) {
-    const content = [
-        `${extensionDisplayName} recovery key`,
-        "เก็บไฟล์นี้ไว้นอกเครื่องที่ใช้ SillyTavern และอย่าเผยแพร่ให้ผู้อื่น",
-        "",
-        recoveryKey,
-        "",
-    ].join("\n");
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-
-    link.href = url;
-    link.download = "chat-vault-recovery-key.txt";
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function configureVaultEncryption() {
@@ -1023,38 +1125,6 @@ async function prepareVaultPackageForRestore(vaultPackage) {
     return parseChatVaultBackup(restoredContent);
 }
 
-function placeCatFromSettings(cat) {
-    const position = extension_settings[extensionName].catPosition;
-    const maxLeft = Math.max(0, window.innerWidth - cat.offsetWidth);
-    const maxTop = Math.max(0, window.innerHeight - cat.offsetHeight);
-    const hasSavedPosition = Number.isFinite(position?.xRatio)
-        && Number.isFinite(position?.yRatio);
-    const left = hasSavedPosition
-        ? clamp(position.xRatio * maxLeft, 0, maxLeft)
-        : Math.max(0, maxLeft - 8);
-    const top = hasSavedPosition
-        ? clamp(position.yRatio * maxTop, 0, maxTop)
-        : clamp(maxTop * 0.58, 0, maxTop);
-
-    cat.style.left = `${Math.round(left)}px`;
-    cat.style.top = `${Math.round(top)}px`;
-}
-
-function saveCatPosition(cat) {
-    const maxLeft = Math.max(0, window.innerWidth - cat.offsetWidth);
-    const maxTop = Math.max(0, window.innerHeight - cat.offsetHeight);
-    const left = clamp(Number.parseFloat(cat.style.left) || 0, 0, maxLeft);
-    const top = clamp(Number.parseFloat(cat.style.top) || 0, 0, maxTop);
-
-    extension_settings[extensionName].catPosition = {
-        xRatio: maxLeft > 0 ? left / maxLeft : 0,
-        yRatio: maxTop > 0 ? top / maxTop : 0,
-    };
-    saveSettingsDebounced();
-
-    console.log(`[${extensionName}] Cat position saved`);
-}
-
 function createCatMagnet() {
     if (document.getElementById("chat_vault_cat_magnet")) {
         return;
@@ -1096,11 +1166,14 @@ function createCatMagnet() {
     const driveSettingsSummary = document.createElement("summary");
     const driveFolderSection = document.createElement("div");
     const driveFolderLabel = document.createElement("label");
+    const driveFolderSelect = document.createElement("select");
     const driveFolderInput = document.createElement("input");
     const driveFolderButton = document.createElement("button");
+    const driveFolderCleanupButton = document.createElement("button");
     const driveFolderOpenLink = document.createElement("a");
     const driveLastFileOpenLink = document.createElement("a");
     const driveFolderNote = document.createElement("small");
+    const driveFolderLooseNote = document.createElement("small");
     const driveFolderWarning = document.createElement("small");
     const driveRestoreButton = document.createElement("button");
     const localRestoreButton = document.createElement("button");
@@ -1267,8 +1340,13 @@ function createCatMagnet() {
     driveSettingsSummary.textContent = "โฟลเดอร์และพื้นที่ Google Drive";
     driveSettingsDetails.append(driveSettingsSummary);
     driveFolderSection.className = "chat-vault-drive-folder-section";
-    driveFolderLabel.htmlFor = "chat_vault_drive_folder_name";
+    driveFolderLabel.htmlFor = "chat_vault_drive_folder_select";
     driveFolderLabel.textContent = "โฟลเดอร์สำรองใน Drive";
+    driveFolderSelect.id = "chat_vault_drive_folder_select";
+    driveFolderSelect.className = "text_pole chat-vault-drive-folder-select";
+    driveFolderCleanupButton.type = "button";
+    driveFolderCleanupButton.className = "menu_button chat-vault-drive-folder-cleanup-button";
+    driveFolderCleanupButton.hidden = true;
     driveFolderInput.id = "chat_vault_drive_folder_name";
     driveFolderInput.type = "text";
     driveFolderInput.maxLength = 80;
@@ -1287,12 +1365,17 @@ function createCatMagnet() {
     driveLastFileOpenLink.rel = "noopener noreferrer";
     driveLastFileOpenLink.textContent = "เปิดไฟล์สำรองล่าสุด";
     driveFolderNote.className = "chat-vault-drive-folder-note";
+    driveFolderLooseNote.className = "chat-vault-drive-folder-loose-note";
+    driveFolderLooseNote.hidden = true;
     driveFolderWarning.className = "chat-vault-drive-folder-warning";
     driveFolderWarning.textContent = "ไฟล์ที่เห็นใน Home/Recent คือไฟล์เดียวกับในโฟลเดอร์ · ลบตรงนั้นจะลบไฟล์ในโฟลเดอร์ด้วย";
     driveFolderSection.append(
         driveFolderLabel,
+        driveFolderSelect,
         driveFolderInput,
         driveFolderButton,
+        driveFolderCleanupButton,
+        driveFolderLooseNote,
         driveFolderOpenLink,
         driveLastFileOpenLink,
         driveFolderNote,
@@ -1622,9 +1705,12 @@ function createCatMagnet() {
 
     const updateStorageControls = () => {
         const usesGoogleDrive = storageSelect.value === "google_drive";
-        const hasClientId = Boolean(
-            String(extension_settings[extensionName].googleDriveClientId || "").trim(),
-        );
+        // The Client ID is the browser flow's own credential. When the plugin is
+        // installed it holds the client details on the server instead, so a
+        // blank field here is not an unconfigured install — it is the normal
+        // state, and telling the user to go find an administrator would be wrong.
+        const hasClientId = canUseVaultServer()
+            || Boolean(String(extension_settings[extensionName].googleDriveClientId || "").trim());
         const driveConnected = isGoogleDriveConnected();
         const backupDisabled = autoSaveSelect.value === AUTO_SAVE_MODE_DISABLED;
         const autoSaveEnabled = ![
@@ -1909,6 +1995,18 @@ function createCatMagnet() {
         });
     }
 
+    /*
+     * The folder list costs two Drive requests, so it is fetched when the user
+     * opens the section that shows it rather than on every menu open. Opening
+     * that section is also the moment the list is most likely to be stale — it
+     * is where someone goes after noticing their backups landed somewhere odd.
+     */
+    driveSettingsDetails.addEventListener("toggle", () => {
+        if (driveSettingsDetails.open) {
+            void refreshDriveFolderChoices();
+        }
+    });
+
     // Both the connected bar and the standalone kebab open the same fold-out;
     // whichever is visible for the current state acts as the trigger.
     const toggleAccountMenu = () => {
@@ -1952,6 +2050,23 @@ function createCatMagnet() {
         }
 
         const settings = extension_settings[extensionName];
+
+        /*
+         * When the plugin holds the grant, clearing this page is not a
+         * disconnect — the server would hand out a new token on the next load
+         * and the user would find themselves reconnected by something they just
+         * asked to stop. The server has to be told too, and it is told first:
+         * the local clear below happens either way, so a failed request leaves
+         * the user disconnected here rather than stuck connected everywhere.
+         */
+        if (canUseVaultServer()) {
+            vaultServerStatus = { ...vaultServerStatus, connected: false, email: "" };
+            void disconnectVaultServer().then((ok) => {
+                if (!ok) {
+                    console.warn(`[${extensionName}] Plugin disconnect did not confirm`);
+                }
+            });
+        }
 
         settings.googleDrivePreviouslyConnected = false;
         settings.googleDriveAccountHint = "";
@@ -2007,9 +2122,34 @@ function createCatMagnet() {
 
             setGoogleDriveFolderName(folderName);
 
+            /*
+             * With the plugin installed, authorizing is the server's job: the
+             * page goes to it, it runs the authorization-code exchange Google
+             * will not let a browser do, and the user comes back connected for
+             * good rather than for an hour.
+             *
+             * This branch comes first because it supersedes both of the ones
+             * below — it is the better answer on desktop and on iOS alike.
+             */
+            if (canUseVaultServer()) {
+                rememberPendingFolderName(folderName);
+                googleDriveStatusMessage = "กำลังพาไปหน้า Google...";
+                updateStorageControls();
+                globalThis.location.assign(getVaultServerAuthUrl(
+                    globalThis.location.pathname + globalThis.location.search,
+                ));
+
+                return;
+            }
+
             // On iOS the popup can never hand the token back, so the whole page
-            // goes to Google instead. Persist first: this call navigates away and
-            // nothing after it runs, so anything not saved here is lost.
+            // goes to Google instead. Nothing after that call runs.
+            //
+            // The in-memory assignment below is still worth doing for the case
+            // where the navigation is blocked, but it cannot be relied on to
+            // survive: saveSettingsDebounced() is a timer, and this page is about
+            // to be torn down. The folder name therefore travels with the
+            // authorization state instead, and is written back on the way in.
             if (shouldUseGoogleDriveRedirect()) {
                 settings.googleDriveFolderName = folderName;
                 saveSettingsDebounced();
@@ -2018,6 +2158,7 @@ function createCatMagnet() {
                 startGoogleDriveRedirectAuthorization(clientId, {
                     loginHint: settings.googleDriveAccountHint,
                     selectAccount,
+                    folderName,
                 });
 
                 return;
@@ -2080,6 +2221,199 @@ function createCatMagnet() {
         await connectGoogleAccount(true);
     });
 
+    /*
+     * Choosing the backup folder used to be a free-text box, which quietly made
+     * a typo into a new folder and split someone's backups across both. It also
+     * gave no way to answer the question a returning user actually has — "which
+     * folder was I using?" — and no way to see the duplicates the old folder
+     * race left behind, because they all carry the same name.
+     *
+     * A list of what exists, with how many backups each holds, answers all three.
+     * `drive.file` makes the list exactly right: it can only see folders this
+     * extension created, so nothing of the user's own is exposed and nothing of
+     * ours is missing.
+     */
+    const NEW_FOLDER_OPTION_VALUE = "__chat_vault_new_folder__";
+    let driveFolderChoices = [];
+    let driveFolderLooseCount = 0;
+
+    const isCreatingNewFolder = () => driveFolderSelect.value === NEW_FOLDER_OPTION_VALUE
+        || !driveFolderChoices.length;
+
+    const applyFolderSelectionMode = () => {
+        const creatingNew = isCreatingNewFolder();
+
+        driveFolderInput.hidden = !creatingNew;
+        driveFolderButton.textContent = creatingNew
+            ? "สร้างและใช้โฟลเดอร์นี้"
+            : "ใช้โฟลเดอร์นี้";
+    };
+
+    const refreshDriveFolderChoices = async () => {
+        if (!isGoogleDriveConnected()) {
+            driveFolderChoices = [];
+            replaceElementChildren(driveFolderSelect);
+            driveFolderSelect.hidden = true;
+            driveFolderCleanupButton.hidden = true;
+            applyFolderSelectionMode();
+
+            return;
+        }
+
+        let listing;
+
+        try {
+            listing = await listChatVaultFolders();
+        } catch (error) {
+            // The dropdown is a convenience over a box that still works. Losing
+            // it must not block the user from typing a folder name.
+            driveFolderChoices = [];
+            driveFolderSelect.hidden = true;
+            driveFolderCleanupButton.hidden = true;
+            applyFolderSelectionMode();
+            console.warn(`[${extensionName}] Could not list Chat Vault folders:`, error);
+
+            return;
+        }
+
+        driveFolderChoices = listing.folders;
+        driveFolderLooseCount = listing.looseBackupCount;
+        replaceElementChildren(driveFolderSelect);
+
+        const duplicateNames = new Set();
+        const seenNames = new Set();
+
+        for (const folder of listing.folders) {
+            if (seenNames.has(folder.name)) {
+                duplicateNames.add(folder.name);
+            }
+
+            seenNames.add(folder.name);
+        }
+
+        for (const folder of listing.folders) {
+            const option = document.createElement("option");
+            // Identical names are exactly the case this list exists to untangle,
+            // so when there are any, the creation date is what tells them apart.
+            const suffix = duplicateNames.has(folder.name) && folder.createdTime
+                ? ` · สร้าง ${formatRestoreDate(folder.createdTime)}`
+                : "";
+
+            option.value = folder.id;
+            option.textContent = `${folder.name} — ${folder.backupCount} สำเนา${suffix}`;
+            driveFolderSelect.append(option);
+        }
+
+        const newOption = document.createElement("option");
+
+        newOption.value = NEW_FOLDER_OPTION_VALUE;
+        newOption.textContent = "✏️ สร้างโฟลเดอร์ใหม่...";
+        driveFolderSelect.append(newOption);
+
+        // Prefer the folder actually in use; otherwise the best match for the
+        // saved name, which for duplicates means the one holding the backups.
+        const activeName = extension_settings[extensionName].googleDriveFolderName;
+        const preferred = listing.folders.find((folder) => folder.id === googleDriveFolder?.id)
+            || listing.folders
+                .filter((folder) => folder.name === activeName)
+                .sort((left, right) => right.backupCount - left.backupCount)[0];
+
+        driveFolderSelect.value = preferred ? preferred.id : NEW_FOLDER_OPTION_VALUE;
+        driveFolderSelect.hidden = listing.folders.length === 0;
+
+        // Only ever offered for folders with nothing in them, and never for the
+        // one in use. An empty duplicate is debris; a folder with backups is
+        // somebody's data and is not this button's business.
+        const emptyFolders = listing.folders.filter((folder) => folder.backupCount === 0
+            && folder.id !== preferred?.id);
+
+        driveFolderCleanupButton.hidden = emptyFolders.length === 0;
+        driveFolderCleanupButton.textContent = `เก็บกวาดโฟลเดอร์ว่าง (${emptyFolders.length})`;
+        driveFolderCleanupButton.dataset.chatVaultEmptyIds = emptyFolders
+            .map((folder) => folder.id)
+            .join(",");
+
+        // Its own element rather than driveFolderNote, which updateStorageControls
+        // rewrites on every refresh and would wipe this a moment after it appeared.
+        driveFolderLooseNote.hidden = listing.looseBackupCount === 0;
+        driveFolderLooseNote.textContent = listing.looseBackupCount > 0
+            ? `มีสำเนา ${listing.looseBackupCount} ไฟล์ยังไม่ได้อยู่ในโฟลเดอร์ · เลือกโฟลเดอร์แล้วกด “ใช้โฟลเดอร์นี้” เพื่อย้ายเข้าให้เรียบร้อย`
+            : "";
+
+        applyFolderSelectionMode();
+    };
+
+    driveFolderSelect.addEventListener("change", () => {
+        const chosen = driveFolderChoices.find((folder) => folder.id === driveFolderSelect.value);
+
+        if (chosen) {
+            driveFolderInput.value = chosen.name;
+        }
+
+        applyFolderSelectionMode();
+    });
+
+    driveFolderCleanupButton.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const ids = String(driveFolderCleanupButton.dataset.chatVaultEmptyIds || "")
+            .split(",")
+            .filter(Boolean);
+
+        if (!ids.length) {
+            return;
+        }
+
+        /*
+         * Named as what it is. These go to the Drive trash, not to deletion, and
+         * the wording says so — a user who changes their mind has thirty days.
+         * The second sentence is the honest part: `drive.file` cannot see files
+         * the user put in these folders by hand, so "empty" means empty of
+         * Chat Vault backups, and only the user knows about the rest.
+         */
+        const confirmed = globalThis.confirm(
+            `ย้ายโฟลเดอร์ว่าง ${ids.length} โฟลเดอร์ไปถังขยะของ Google Drive?\n\n`
+            + "โฟลเดอร์เหล่านี้ไม่มีสำเนาแชทอยู่เลย และกู้กลับจากถังขยะได้ภายใน 30 วัน\n"
+            + "หากเคยนำไฟล์อื่นไปวางไว้เอง พ็อกกี้จะมองไม่เห็นไฟล์นั้น และมันจะถูกย้ายไปด้วย",
+        );
+
+        if (!confirmed) {
+            return;
+        }
+
+        const originalText = driveFolderCleanupButton.textContent;
+
+        driveFolderCleanupButton.disabled = true;
+        driveFolderCleanupButton.textContent = "กำลังเก็บกวาด...";
+
+        let trashedCount = 0;
+        let skippedCount = 0;
+
+        for (const id of ids) {
+            try {
+                await trashChatVaultFolder(id);
+                trashedCount += 1;
+            } catch (error) {
+                // folder_not_empty means a backup landed in it since the list was
+                // built. Skipping is the right answer, not an error to shout about.
+                skippedCount += 1;
+                console.warn(`[${extensionName}] Left folder ${id} alone:`, error);
+            }
+        }
+
+        driveFolderCleanupButton.disabled = false;
+        driveFolderCleanupButton.textContent = originalText;
+        toastr.success(
+            skippedCount > 0
+                ? `เก็บกวาดแล้ว ${trashedCount} โฟลเดอร์ · ข้าม ${skippedCount} โฟลเดอร์ที่มีไฟล์อยู่`
+                : `ย้าย ${trashedCount} โฟลเดอร์ว่างไปถังขยะแล้ว`,
+            extensionDisplayName,
+        );
+        await refreshDriveFolderChoices();
+        updateStorageControls();
+    });
+
     const applyDriveFolder = async () => {
         if (!isGoogleDriveConnected()) {
             toastr.warning("กรุณาเชื่อม Google Drive ก่อนเลือกโฟลเดอร์", extensionDisplayName);
@@ -2089,12 +2423,52 @@ function createCatMagnet() {
         const previousFolderName = extension_settings[extensionName].googleDriveFolderName;
         const previousDriveFolder = googleDriveFolder;
         const originalText = driveFolderButton.textContent;
+        const selectedFolder = isCreatingNewFolder()
+            ? null
+            : driveFolderChoices.find((folder) => folder.id === driveFolderSelect.value);
+
+        /*
+         * Choosing a folder does not just point new backups at it — it gathers
+         * every existing backup into it, from the other folders and from loose
+         * files alike. That is the right behaviour for the case it was written
+         * for (one folder, tidy it up) and a trap now that the list makes the
+         * other folders visible and clickable: a user opening the small
+         * duplicate to see what is inside would sweep the large one into it.
+         *
+         * So the move is stated before it happens, with the number, whenever
+         * there is anything to move. Nothing is destroyed either way — this is
+         * reversible by choosing the other folder — but a backup extension
+         * should never relocate someone's history without saying so first.
+         */
+        const incomingCount = driveFolderChoices
+            .filter((folder) => folder.id !== selectedFolder?.id)
+            .reduce((total, folder) => total + folder.backupCount, 0) + driveFolderLooseCount;
+
+        if (incomingCount > 0 && isGoogleDriveConnected()) {
+            const destination = selectedFolder
+                ? `“${selectedFolder.name}”`
+                : `“${String(driveFolderInput.value || DEFAULT_GOOGLE_DRIVE_FOLDER_NAME).trim()}”`;
+            const confirmed = globalThis.confirm(
+                `ย้ายสำเนา ${incomingCount} ไฟล์ที่อยู่โฟลเดอร์อื่นเข้ามารวมใน ${destination} หรือไม่?\n\n`
+                + "ไฟล์จะถูกย้าย ไม่ได้ถูกลบ และเลือกโฟลเดอร์อื่นภายหลังเพื่อย้ายกลับได้",
+            );
+
+            if (!confirmed) {
+                return;
+            }
+        }
 
         driveFolderButton.disabled = true;
         driveFolderButton.textContent = "กำลังเตรียมโฟลเดอร์...";
 
         try {
-            const folderName = setGoogleDriveFolderName(driveFolderInput.value);
+            const chosenFolder = selectedFolder;
+            // Picking from the list means that folder, by id. Resolving by name
+            // instead would land on whichever duplicate Drive happens to list
+            // first, which is the opposite of choosing.
+            const folderName = chosenFolder
+                ? (await pinGoogleDriveFolder(chosenFolder)).name
+                : setGoogleDriveFolderName(driveFolderInput.value);
             const { folder, movedCount, totalCount } = await organizeGoogleDriveBackups();
 
             extension_settings[extensionName].googleDriveFolderName = folderName;
@@ -2113,6 +2487,9 @@ function createCatMagnet() {
             toastr.success(`ใช้โฟลเดอร์ “${folder.name}” แล้ว`, extensionDisplayName);
             void refreshGoogleDriveUsage({ force: true });
             void flushPendingDriveBackups();
+            // Counts have just changed — files moved into the chosen folder, and
+            // whichever folder they came from may now be empty and sweepable.
+            void refreshDriveFolderChoices();
         } catch (error) {
             setGoogleDriveFolderName(previousFolderName || DEFAULT_GOOGLE_DRIVE_FOLDER_NAME);
             googleDriveFolder = previousDriveFolder;
@@ -2700,61 +3077,6 @@ function getRestoreTarget(context) {
         name: context.name2 || character.name || "ตัวละครปัจจุบัน",
         avatar: character.avatar,
     };
-}
-
-function formatRestoreDate(value) {
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-        return "ไม่ทราบเวลา";
-    }
-
-    return date.toLocaleString("th-TH", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-    });
-}
-
-function formatBackupPreview(parsedBackup) {
-    const messages = Array.isArray(parsedBackup?.messages)
-        ? parsedBackup.messages
-        : [];
-    const recentMessages = messages.slice(-3).map((message) => {
-        const speaker = message.is_user
-            ? (message.name || "ผู้ใช้")
-            : (message.name || parsedBackup.header.character_name || "ตัวละคร");
-        const text = String(message.mes || "")
-            .replace(/<[^>]*>/g, " ")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 140);
-
-        return `${speaker}: ${text || "(ข้อความว่าง)"}`;
-    });
-
-    return [
-        `${parsedBackup.messageCount} ข้อความ`,
-        `ต้นฉบับ: ${parsedBackup.header.character_name || parsedBackup.header.name || "ไม่ระบุ"}`,
-        ...(recentMessages.length ? ["", ...recentMessages] : []),
-    ].join("\n");
-}
-
-function downloadBackupContent(content, fileName) {
-    const blob = new Blob([content], {
-        type: "application/x-ndjson;charset=utf-8",
-    });
-    const downloadUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-
-    link.href = downloadUrl;
-    link.download = String(fileName || "chat-vault-backup.jsonl");
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
 
 async function createNamedCheckpoint() {
@@ -4002,10 +4324,14 @@ async function autoUploadBackupToGoogleDrive(backup, settings) {
         return;
     }
 
-    if (
-        !isGoogleDriveConnected()
-        && !await restoreRememberedGoogleDriveSession()
-    ) {
+    // This runs off a chat event, not off a click. Whatever activation the
+    // message send carried is long gone by the time the snapshot is built, so an
+    // authorization started here is a popup the browser blocks — and a blocked
+    // attempt is not free: it clears the remembered account and starts the
+    // reconnect cooldown, which would then swallow the user's own next click.
+    // The snapshot is already safe locally; it waits as a pending backup and
+    // goes up once a real reconnect happens.
+    if (!isGoogleDriveConnected()) {
         googleDriveStatusMessage = "สำรองในเครื่องแล้ว · เชื่อม Drive ใหม่เพื่อส่งอัตโนมัติ";
         refreshCatStorageControls();
         return;
@@ -4335,8 +4661,45 @@ jQuery(async () => {
         registerAutoSaveEvents();
         registerDriveRetryEvents();
 
-        prepareGoogleDrive()
-            .then(async () => {
+        /*
+         * Which of the two authorization paths this session uses is decided
+         * here, and it is decided by the instance rather than by the user: the
+         * plugin is either installed on this SillyTavern or it is not. The probe
+         * is a local request that answers at once or 404s, so asking costs an
+         * ordinary install nothing.
+         */
+        detectVaultServer()
+            .then(async (status) => {
+                vaultServerStatus = status;
+
+                if (canUseVaultServer()) {
+                    console.log(`[${extensionName}] Pocky Vault plugin detected`);
+                    refreshCatStorageControls();
+
+                    if (await restoreRememberedGoogleDriveSession()) {
+                        await flushPendingDriveBackups();
+                    }
+
+                    return;
+                }
+
+                // Installed but never given its Google credentials. Said out
+                // loud, because from the menu this is indistinguishable from
+                // having no plugin at all, and whoever put the file there is
+                // owed an explanation of why it appears to do nothing.
+                if (status) {
+                    console.warn(
+                        `[${extensionName}] Pocky Vault plugin is installed but not configured;`
+                        + " falling back to browser authorization."
+                        + " POST clientId and clientSecret to /api/plugins/pocky-vault/config to enable it.",
+                    );
+                }
+
+                // Browser-only path — which needs Google's script loaded, and
+                // cannot reconnect until the user supplies a gesture for it to
+                // work with.
+                await prepareGoogleDrive();
+
                 // Coming back from the mobile redirect the token is already in the
                 // URL, so settle that before anything tries to reconnect — a silent
                 // reconnect would otherwise race it and fail for no reason.
@@ -4346,14 +4709,10 @@ jQuery(async () => {
                     return;
                 }
 
-                const restored = await restoreRememberedGoogleDriveSession();
-
-                if (restored) {
-                    await flushPendingDriveBackups();
-                }
+                armGestureDriveReconnect();
             })
             .catch((error) => {
-                console.warn(`[${extensionName}] Google Identity preload failed:`, error);
+                console.warn(`[${extensionName}] Google Drive startup failed:`, error);
             });
 
         console.log(`[${extensionName}] Loaded successfully`);
