@@ -864,13 +864,21 @@ async function flushPendingDriveBackupsOnce({ allowReconnect = true } = {}) {
         return { uploadedCount: 0, pendingCount: 0 };
     }
 
-    // A flush that nobody asked for must not start an authorization. Background
-    // triggers fire far more often than they look like they do — visibilitychange
-    // alone lands on every app switch, screen lock and tab change — and each
-    // reconnect attempt that fails clears the remembered account, so a phone left
-    // switching between apps can walk itself out of a working session.
+    // A flush that nobody asked for must not open an authorization DIALOG.
+    // Background triggers fire far more often than they look like they do —
+    // visibilitychange alone lands on every app switch, screen lock and tab
+    // change — and each blocked popup costs the remembered account, so a phone
+    // left switching between apps can walk itself out of a working session.
+    //
+    // The server plugin is the exception, deliberately: minting a token from a
+    // grant that already exists opens nothing and can be refused nothing, so a
+    // background flush may renew through it. Without this, a page left open past
+    // the hour would quietly stop delivering until the user touched a vault
+    // control — on exactly the installs that opted into "never think about it".
     if (!isGoogleDriveConnected()) {
-        if (!allowReconnect || !await restoreRememberedGoogleDriveSession()) {
+        const mayReconnect = allowReconnect || canUseVaultServer();
+
+        if (!mayReconnect || !await restoreRememberedGoogleDriveSession()) {
             return { uploadedCount: 0, pendingCount: 0 };
         }
     }
@@ -4439,10 +4447,17 @@ async function autoUploadBackupToGoogleDrive(backup, settings) {
     // reconnect cooldown, which would then swallow the user's own next click.
     // The snapshot is already safe locally; it waits as a pending backup and
     // goes up once a real reconnect happens.
+    //
+    // With the server plugin the calculus flips: renewal opens no dialog, so an
+    // expired hour-old token is refreshed right here and the upload proceeds —
+    // chatting past the token's lifetime must not quietly demote backups to
+    // pending on the one setup whose whole point is not having to think.
     if (!isGoogleDriveConnected()) {
-        googleDriveStatusMessage = "สำรองในเครื่องแล้ว · เชื่อม Drive ใหม่เพื่อส่งอัตโนมัติ";
-        refreshCatStorageControls();
-        return;
+        if (!canUseVaultServer() || !await restoreRememberedGoogleDriveSession()) {
+            googleDriveStatusMessage = "สำรองในเครื่องแล้ว · เชื่อม Drive ใหม่เพื่อส่งอัตโนมัติ";
+            refreshCatStorageControls();
+            return;
+        }
     }
 
     try {
