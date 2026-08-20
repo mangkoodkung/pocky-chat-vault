@@ -22,7 +22,7 @@ export const extensionName = "sillytavern-chat-vault";
 // files the extension fetches by path, so a release that forgets to change it is
 // a release whose users keep seeing the previous settings panel and artwork.
 // (Release checklists that said index.js for this value now mean this file.)
-export const extensionVersion = "1.5.0";
+export const extensionVersion = "1.5.1";
 
 // The name the user sees — menu headings, toast titles, the settings panel.
 // Deliberately separate from extensionName above: that one is a storage key and

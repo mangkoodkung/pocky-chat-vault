@@ -4303,6 +4303,8 @@ function showGoogleDriveError(error, fallbackMessage) {
         access_token_missing: "Google ไม่ได้ส่งสิทธิ์กลับมา กรุณาเชื่อมใหม่",
         // Redirect flow (mobile). These are refusals on our side, not Google's:
         // the reply did not prove it came from the request we sent.
+        redirect_state_unstorable: "Safari กำลังบล็อกการเก็บข้อมูลของเว็บนี้ จึงเริ่มเชื่อมไม่ได้"
+            + "\n\nเช็กที่ ตั้งค่า → Safari: ปิด Block All Cookies แล้วลองใหม่ · ถ้าเปิดแบบหน้าต่างส่วนตัว (Private) ลองแท็บปกติ",
         redirect_state_mismatch: "การเชื่อมต่อไม่ตรงกับที่เริ่มไว้ ระบบจึงไม่รับสิทธิ์นี้ · กรุณากดเชื่อมใหม่จากในแอป",
         redirect_state_invalid: "ข้อมูลการเชื่อมต่อเสียหาย กรุณากดเชื่อมใหม่",
         redirect_token_foreign: "สิทธิ์ที่ได้กลับมาไม่ใช่ของแอปนี้ ระบบจึงปฏิเสธเพื่อความปลอดภัย",
@@ -4323,9 +4325,17 @@ function showGoogleDriveError(error, fallbackMessage) {
         backup_folder_mismatch: "Google Drive ยังวางไฟล์ไม่ตรงโฟลเดอร์ที่เลือก กรุณาลองใหม่",
         backup_checksum_mismatch: "Checksum ของไฟล์สำรองไม่ตรง ระบบหยุดเพื่อป้องกันการกู้คืนไฟล์เสีย",
     };
+    /*
+     * An exception this map does not know is exactly the one worth reading. On a
+     * phone there is no console, toasts vanish in seconds, and a generic "ไม่
+     * สำเร็จ" turns every unforeseen failure into "kod laew ngiab" — which is how
+     * a WebKit-only error stays undiagnosable for weeks. So the raw name and
+     * message ride along in the persistent status line, where a screenshot of
+     * the menu is a complete bug report.
+     */
     const message = error instanceof GoogleDriveError
         ? messages[error.code] || error.message || fallbackMessage
-        : fallbackMessage;
+        : `${fallbackMessage}\n(${String(error?.name || "Error")}: ${String(error?.message || error).slice(0, 160)})`;
 
     googleDriveStatusMessage = message;
     toastr.error(message, extensionDisplayName);

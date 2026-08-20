@@ -286,12 +286,27 @@ export function startGoogleDriveRedirectAuthorization(clientId, {
     // chosen folder to whatever was last persisted. Writing it here instead means
     // the value survives the round trip without depending on a timer we are about
     // to destroy.
-    globalThis.sessionStorage.setItem(REDIRECT_STATE_STORAGE_KEY, JSON.stringify({
-        state,
-        clientId: normalizedClientId,
-        redirectUri,
-        folderName: String(folderName || ""),
-    }));
+    //
+    // On iOS this write can itself be the thing that fails: Safari's "Block All
+    // Cookies" setting makes every storage access throw a SecurityError. Without
+    // this guard that surfaced as a generic "ไม่สำเร็จ" with no clue, and the tap
+    // looked like it did nothing. Naming the cause is the whole fix — and leaving
+    // without the state stored is not an option, because the reply could then
+    // never be verified as ours.
+    try {
+        globalThis.sessionStorage.setItem(REDIRECT_STATE_STORAGE_KEY, JSON.stringify({
+            state,
+            clientId: normalizedClientId,
+            redirectUri,
+            folderName: String(folderName || ""),
+        }));
+    } catch (error) {
+        throw new GoogleDriveError(
+            "redirect_state_unstorable",
+            "Safari refused to store the authorization state",
+            error,
+        );
+    }
 
     const params = new URLSearchParams({
         client_id: normalizedClientId,
