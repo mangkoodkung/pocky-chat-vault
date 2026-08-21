@@ -95,7 +95,7 @@ import {
     extensionFolderPath,
     extensionName,
     extensionVersion,
-} from "./vault-env.js";
+} from "./vault-identity.js";
 import {
     bytesToBase64,
     clamp,

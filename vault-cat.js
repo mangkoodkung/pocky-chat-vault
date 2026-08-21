@@ -12,7 +12,7 @@
 
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced } from "../../../../script.js";
-import { extensionFolderPath, extensionName, extensionVersion } from "./vault-env.js";
+import { extensionFolderPath, extensionName, extensionVersion } from "./vault-identity.js";
 import { clamp } from "./vault-format.js";
 
 // One drawing per health state. The file names describe what the user sees,

@@ -7,7 +7,7 @@
  * creator's details live in this one obvious place.
  */
 
-import { extensionDisplayName, extensionVersion } from "./vault-env.js";
+import { extensionDisplayName, extensionVersion } from "./vault-identity.js";
 import { getCatHealthImageUrl } from "./vault-cat.js";
 
 // Leave POKKI_GITHUB_URL empty and the GitHub row simply does not render; fill

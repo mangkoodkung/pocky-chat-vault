@@ -13,7 +13,7 @@
  * and removed. They still depend on nothing of the extension's state.
  */
 
-import { extensionDisplayName } from "./vault-env.js";
+import { extensionDisplayName } from "./vault-identity.js";
 
 export function clamp(value, minimum, maximum) {
     return Math.min(Math.max(value, minimum), maximum);
